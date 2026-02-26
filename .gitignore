@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Account data (sensitive - per-player encrypted files)
+accounts/
+data/accounts/
+
+# Build output
+build/
+
+# Secrets / env
+*.env
+app.env
+account_secrets.json
+shard-config.json
+ecosystem.config.js
+
+# LOVE 2D runtime (not source)
+love.exe
+love.dll
+lovec.exe
+love.ico
+love - Shortcut.lnk
+OpenAL32.dll
+SDL2.dll
+lua51.dll
+mpg123.dll
+msvcp120.dll
+msvcr120.dll
+Uninstall.exe
+
+# Temp/context files
+context2.txt
+context3.txt
+context4.txt
+changes.txt
+*.txt
+SESSION*.md
+SESSION-HANDOFF*.md
+DUNGEON_SYSTEM_CONTEXT.txt
+
+# Windows cruft
+C:Usersjonat.bosscordtest-upload.txt

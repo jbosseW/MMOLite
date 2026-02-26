@@ -1,0 +1,396 @@
+// handlers/trade.js
+// Player-to-player trading handler.
+
+var challengesHandler = require('./challenges');
+
+// Per-account trade execution lock: prevents a player from executing two trades simultaneously
+var tradeExecLocks = new Set();
+
+module.exports = {
+  // Active trades: Map<tradeId, trade>
+  _trades: new Map(),
+
+  init(io, socket, deps) {
+    var { user, state, socketAccountMap, accounts, checkEventRate } = deps;
+    var trades = this._trades;
+
+    // --- trade_request: initiate a trade ---
+    socket.on('trade_request', function(data) {
+      if (!data || typeof data.targetId !== 'string') return;
+
+      // Must be in same zone
+      var myZone = state.playerZones.get(socket.id);
+      var targetZone = state.playerZones.get(data.targetId);
+      if (!myZone || myZone !== targetZone) {
+        socket.emit('trade_error', { message: 'Target not in your zone' });
+        return;
+      }
+
+      var tradeId = state.generateId();
+      var trade = {
+        id: tradeId,
+        initiator: socket.id,
+        target: data.targetId,
+        offers: {},      // socketId -> { items: [], chips: 0 }
+        confirmed: {},   // socketId -> boolean
+        state: 'pending', // pending, active, confirmed, completed, cancelled
+        createdAt: Date.now(),
+      };
+      trade.offers[socket.id] = { items: [], chips: 0 };
+      trade.offers[data.targetId] = { items: [], chips: 0 };
+      trade.confirmed[socket.id] = false;
+      trade.confirmed[data.targetId] = false;
+
+      trades.set(tradeId, trade);
+
+      io.to(data.targetId).emit('trade_request_received', {
+        tradeId: tradeId,
+        fromId: socket.id,
+        fromName: user.name,
+      });
+
+      socket.emit('trade_request_sent', { tradeId: tradeId, targetId: data.targetId });
+
+      // Auto-expire after 30 seconds if not accepted
+      setTimeout(function() {
+        var t = trades.get(tradeId);
+        if (t && t.state === 'pending') {
+          trades.delete(tradeId);
+          io.to(socket.id).emit('trade_expired', { tradeId: tradeId });
+          io.to(data.targetId).emit('trade_expired', { tradeId: tradeId });
+        }
+      }, 30000);
+    });
+
+    // --- trade_accept: accept a trade request ---
+    socket.on('trade_accept', function(data) {
+      if (!data || typeof data.tradeId !== 'string') return;
+
+      var trade = trades.get(data.tradeId);
+      if (!trade || trade.state !== 'pending' || trade.target !== socket.id) {
+        socket.emit('trade_error', { message: 'Trade not found or not for you' });
+        return;
+      }
+
+      trade.state = 'active';
+
+      io.to(trade.initiator).emit('trade_started', { tradeId: trade.id });
+      socket.emit('trade_started', { tradeId: trade.id });
+    });
+
+    // --- trade_offer: update what you're offering ---
+    socket.on('trade_offer', function(data) {
+      if (!data || typeof data.tradeId !== 'string') return;
+
+      var trade = trades.get(data.tradeId);
+      if (!trade || trade.state !== 'active') return;
+      if (socket.id !== trade.initiator && socket.id !== trade.target) return;
+
+      var offerKey = socketAccountMap.get(socket.id);
+      if (!offerKey) return;
+
+      // Validate and sanitize offered items against actual inventory
+      var validatedItems = [];
+      if (Array.isArray(data.items)) {
+        var offerAcc = accounts.loadAccount(offerKey);
+        var offerInv = accounts.getMMOInventory(offerKey);
+        if (!offerAcc || !offerInv) return;
+
+        for (var vi = 0; vi < Math.min(data.items.length, 10); vi++) {
+          var rawItem = data.items[vi];
+          if (!rawItem || typeof rawItem !== 'object') continue;
+
+          if (rawItem.type === 'resource' && typeof rawItem.resource === 'string' && typeof rawItem.amount === 'number') {
+            var amt = Math.floor(rawItem.amount);
+            if (amt < 1) continue;
+            // Validate player actually has this resource in sufficient quantity
+            var have = offerInv[rawItem.resource] || 0;
+            if (have < amt) amt = have;
+            if (amt > 0) {
+              validatedItems.push({ type: 'resource', resource: rawItem.resource, amount: amt });
+            }
+          } else if (rawItem.type === 'card' && typeof rawItem.cardInstanceId === 'string') {
+            // Validate card exists in player's inventory
+            if (offerAcc.rpgCards) {
+              var cardFound = false;
+              for (var ci = 0; ci < offerAcc.rpgCards.length; ci++) {
+                if (offerAcc.rpgCards[ci].instanceId === rawItem.cardInstanceId) {
+                  cardFound = true;
+                  break;
+                }
+              }
+              if (cardFound) {
+                validatedItems.push({ type: 'card', cardInstanceId: rawItem.cardInstanceId });
+              }
+            }
+          }
+          // Ignore any other item types
+        }
+      }
+
+      trade.offers[socket.id].items = validatedItems;
+
+      if (typeof data.chips === 'number' && data.chips >= 0) {
+        // Clamp coins to what the player actually has
+        var chipAcc = accounts.loadAccount(offerKey);
+        var maxChips = chipAcc ? (chipAcc.chips || 0) : 0;
+        trade.offers[socket.id].chips = Math.min(Math.floor(data.chips), maxChips);
+      }
+
+      // Reset confirmations when offer changes
+      trade.confirmed[trade.initiator] = false;
+      trade.confirmed[trade.target] = false;
+
+      // Notify other party
+      var otherId = (socket.id === trade.initiator) ? trade.target : trade.initiator;
+      io.to(otherId).emit('trade_offer_updated', {
+        tradeId: trade.id,
+        fromId: socket.id,
+        offer: trade.offers[socket.id],
+      });
+    });
+
+    // --- trade_confirm: lock in your offer ---
+    socket.on('trade_confirm', function(data) {
+      if (!data || typeof data.tradeId !== 'string') return;
+
+      var trade = trades.get(data.tradeId);
+      if (!trade || trade.state !== 'active') return;
+      if (socket.id !== trade.initiator && socket.id !== trade.target) return;
+
+      trade.confirmed[socket.id] = true;
+
+      var otherId = (socket.id === trade.initiator) ? trade.target : trade.initiator;
+      io.to(otherId).emit('trade_partner_confirmed', { tradeId: trade.id });
+
+      // If both confirmed, execute trade
+      if (trade.confirmed[trade.initiator] && trade.confirmed[trade.target]) {
+        // Execute the trade: swap resources, items, cards, and coins between accounts
+        var initKey = socketAccountMap.get(trade.initiator);
+        var targKey = socketAccountMap.get(trade.target);
+        if (!initKey || !targKey) {
+          io.to(trade.initiator).emit('trade_error', { message: 'Trade failed: account not found' });
+          io.to(trade.target).emit('trade_error', { message: 'Trade failed: account not found' });
+          trades.delete(trade.id);
+          return;
+        }
+
+        // Acquire execution locks on both accounts to prevent double-spend
+        if (tradeExecLocks.has(initKey) || tradeExecLocks.has(targKey)) {
+          socket.emit('trade_error', { message: 'Transaction in progress, try again' });
+          return;
+        }
+        tradeExecLocks.add(initKey);
+        tradeExecLocks.add(targKey);
+
+        try {
+          var initOffer = trade.offers[trade.initiator];
+          var targOffer = trade.offers[trade.target];
+
+          // ---------------------------------------------------------------
+          // RE-VALIDATE all offered items at execution time (C-4 fix).
+          // Between offer and confirm, a player could have spent/traded
+          // resources elsewhere. Verify everything BEFORE any transfers.
+          // ---------------------------------------------------------------
+          var initAcc = accounts.loadAccount(initKey);
+          var targAcc = accounts.loadAccount(targKey);
+          if (!initAcc || !targAcc) {
+            io.to(trade.initiator).emit('trade_error', { message: 'Trade failed' });
+            io.to(trade.target).emit('trade_error', { message: 'Trade failed' });
+            trades.delete(trade.id);
+            return;
+          }
+
+          // Validate coins for both parties
+          if ((initOffer.chips || 0) > (initAcc.chips || 0)) {
+            io.to(trade.initiator).emit('trade_error', { message: 'Not enough coins' });
+            io.to(trade.target).emit('trade_error', { message: 'Trade failed: partner lacks coins' });
+            trades.delete(trade.id);
+            return;
+          }
+          if ((targOffer.chips || 0) > (targAcc.chips || 0)) {
+            io.to(trade.target).emit('trade_error', { message: 'Not enough coins' });
+            io.to(trade.initiator).emit('trade_error', { message: 'Trade failed: partner lacks coins' });
+            trades.delete(trade.id);
+            return;
+          }
+
+          // Re-validate all offered resources and cards still exist
+          function validateOffer(accKey, acc, offer, label) {
+            var inv = accounts.getMMOInventory(accKey);
+            if (!inv) return label + ' inventory unavailable';
+            var items = offer.items || [];
+            for (var vi = 0; vi < items.length; vi++) {
+              var item = items[vi];
+              if (item.type === 'resource' && item.resource && item.amount > 0) {
+                var have = inv[item.resource] || 0;
+                if (have < item.amount) {
+                  return label + ' no longer has enough ' + item.resource.replace(/_/g, ' ');
+                }
+              } else if (item.type === 'card' && item.cardInstanceId) {
+                var cardFound = false;
+                if (acc.rpgCards) {
+                  for (var ci = 0; ci < acc.rpgCards.length; ci++) {
+                    if (acc.rpgCards[ci].instanceId === item.cardInstanceId) {
+                      cardFound = true;
+                      break;
+                    }
+                  }
+                }
+                if (!cardFound) {
+                  return label + ' no longer has an offered card';
+                }
+              }
+            }
+            return null; // all valid
+          }
+
+          var initValidationError = validateOffer(initKey, initAcc, initOffer, 'Initiator');
+          if (initValidationError) {
+            io.to(trade.initiator).emit('trade_error', { message: 'Trade failed: ' + initValidationError });
+            io.to(trade.target).emit('trade_error', { message: 'Trade failed: partner resources changed' });
+            trades.delete(trade.id);
+            return;
+          }
+          var targValidationError = validateOffer(targKey, targAcc, targOffer, 'Partner');
+          if (targValidationError) {
+            io.to(trade.target).emit('trade_error', { message: 'Trade failed: ' + targValidationError });
+            io.to(trade.initiator).emit('trade_error', { message: 'Trade failed: partner resources changed' });
+            trades.delete(trade.id);
+            return;
+          }
+
+          // ---------------------------------------------------------------
+          // All validations passed — proceed with atomic transfers
+          // ---------------------------------------------------------------
+
+          // Swap coins
+          if (initOffer.chips > 0) {
+            accounts.updateChips(initKey, -initOffer.chips);
+            accounts.updateChips(targKey, initOffer.chips);
+          }
+          if (targOffer.chips > 0) {
+            accounts.updateChips(targKey, -targOffer.chips);
+            accounts.updateChips(initKey, targOffer.chips);
+          }
+
+          // Swap resources: each offer.items can contain { type: 'resource', resource: 'wood', amount: 5 }
+          // or { type: 'card', cardInstanceId: 'xxx' }
+          // Collect all card transfers first, then save both accounts once
+          var pendingCardTransfers = [];
+
+          function transferItems(fromKey, toKey, items) {
+            for (var i = 0; i < items.length; i++) {
+              var item = items[i];
+              if (item.type === 'resource' && item.resource && item.amount > 0) {
+                var removed = accounts.removeResource(fromKey, item.resource, item.amount);
+                if (removed !== null) {
+                  accounts.addResource(toKey, item.resource, item.amount);
+                }
+              } else if (item.type === 'card' && item.cardInstanceId) {
+                pendingCardTransfers.push({ fromKey: fromKey, toKey: toKey, cardInstanceId: item.cardInstanceId });
+              }
+            }
+          }
+
+          transferItems(initKey, targKey, initOffer.items || []);
+          transferItems(targKey, initKey, targOffer.items || []);
+
+          // Execute card transfers atomically: modify both accounts in memory, then save both
+          if (pendingCardTransfers.length > 0) {
+            var initAccCards = accounts.loadAccount(initKey);
+            var targAccCards = accounts.loadAccount(targKey);
+            if (initAccCards && targAccCards) {
+              if (!initAccCards.rpgCards) initAccCards.rpgCards = [];
+              if (!targAccCards.rpgCards) targAccCards.rpgCards = [];
+              for (var pci = 0; pci < pendingCardTransfers.length; pci++) {
+                var xfer = pendingCardTransfers[pci];
+                var srcAcc = xfer.fromKey === initKey ? initAccCards : targAccCards;
+                var dstAcc = xfer.toKey === initKey ? initAccCards : targAccCards;
+                if (!srcAcc.rpgCards || !dstAcc.rpgCards) continue;
+                var cardIdx = -1;
+                for (var ci = 0; ci < srcAcc.rpgCards.length; ci++) {
+                  if (srcAcc.rpgCards[ci].instanceId === xfer.cardInstanceId) {
+                    cardIdx = ci;
+                    break;
+                  }
+                }
+                if (cardIdx !== -1) {
+                  var card = srcAcc.rpgCards.splice(cardIdx, 1)[0];
+                  dstAcc.rpgCards.push(card);
+                }
+              }
+              // Save both accounts together — minimizes crash window
+              try {
+                accounts.saveAccount(initAccCards);
+                accounts.saveAccount(targAccCards);
+              } catch (saveErr) {
+                console.error('[trade] Card transfer save failed:', saveErr.message);
+              }
+            }
+          }
+
+          trade.state = 'completed';
+          trades.delete(trade.id);
+
+          // Send updated inventories
+          var initInv = accounts.getMMOInventory(initKey);
+          var targInv = accounts.getMMOInventory(targKey);
+
+          io.to(trade.initiator).emit('trade_completed', {
+            tradeId: trade.id,
+            inventory: initInv,
+            coins: (accounts.loadAccount(initKey) || {}).chips || 0,
+          });
+          io.to(trade.target).emit('trade_completed', {
+            tradeId: trade.id,
+            inventory: targInv,
+            coins: (accounts.loadAccount(targKey) || {}).chips || 0,
+          });
+
+          // --- Track daily challenge & achievement progress for trades ---
+          var initSocket = io.sockets.sockets.get(trade.initiator);
+          var targSocket = io.sockets.sockets.get(trade.target);
+          challengesHandler.trackChallengeProgress(accounts, initKey, 'trade', 1);
+          challengesHandler.trackChallengeProgress(accounts, targKey, 'trade', 1);
+          var initTradeUnlocks = challengesHandler.trackAchievementProgress(accounts, initKey, 'trade', 1, initSocket);
+          var targTradeUnlocks = challengesHandler.trackAchievementProgress(accounts, targKey, 'trade', 1, targSocket);
+          challengesHandler.emitAchievementUnlocks(initSocket, accounts, initTradeUnlocks);
+          challengesHandler.emitAchievementUnlocks(targSocket, accounts, targTradeUnlocks);
+        } finally {
+          tradeExecLocks.delete(initKey);
+          tradeExecLocks.delete(targKey);
+        }
+      }
+    });
+
+    // --- trade_cancel: cancel a trade ---
+    socket.on('trade_cancel', function(data) {
+      if (!data || typeof data.tradeId !== 'string') return;
+
+      var trade = trades.get(data.tradeId);
+      if (!trade) return;
+      if (socket.id !== trade.initiator && socket.id !== trade.target) return;
+
+      trade.state = 'cancelled';
+      trades.delete(trade.id);
+
+      io.to(trade.initiator).emit('trade_cancelled', { tradeId: trade.id, cancelledBy: socket.id });
+      io.to(trade.target).emit('trade_cancelled', { tradeId: trade.id, cancelledBy: socket.id });
+    });
+
+    // --- disconnect: clean up any active trades involving this socket ---
+    socket.on('disconnect', function() {
+      for (var entry of trades) {
+        var trade = entry[1];
+        if (trade.initiator === socket.id || trade.target === socket.id) {
+          var otherId = trade.initiator === socket.id ? trade.target : trade.initiator;
+          trade.state = 'cancelled';
+          trades.delete(trade.id);
+          io.to(otherId).emit('trade_cancelled', { tradeId: trade.id, cancelledBy: socket.id, reason: 'disconnect' });
+        }
+      }
+      tradeExecLocks.delete(socketAccountMap.get(socket.id));
+    });
+  }
+};

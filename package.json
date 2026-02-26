@@ -1,0 +1,21 @@
+{
+  "name": "mmolite",
+  "version": "1.0.0",
+  "description": "MMOLite - Pokemon-style MMO game server (Love2D client)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "compression": "^1.8.1",
+    "express": "^4.18.2",
+    "ioredis": "^5.9.3",
+    "pg": "^8.18.0",
+    "socket.io": "^4.7.2",
+    "uuid": "^9.0.0"
+  }
+}

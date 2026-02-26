@@ -1,0 +1,14 @@
+{
+  "shardId": "local",
+  "shardName": "Local Server",
+  "port": 3001,
+  "masterServerUrl": "",
+  "official": false,
+  "maxPlayers": 8,
+  "rules": {
+    "pvpEnabled": false,
+    "xpRate": 1.0,
+    "dropRate": 1.0,
+    "offlineBonus": true
+  }
+}
