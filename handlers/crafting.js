@@ -1591,17 +1591,34 @@ module.exports = {
             if (cEff.type === 'gem_yield_bonus') cardGemYieldBonus += (cEff.value || 0);
           }
 
-          // --- Deduct resources (with ingredient save chance from perks + cards) ---
+          // --- Preflight: verify all ingredients are available before deducting any ---
           var totalIngredientSave = (craftBonuses ? (craftBonuses.ingredientSaveChance || 0) : 0) + cardIngredientSave;
+          // Pre-roll the ingredient saves so we use consistent values in both preflight and deduct
+          var _prerolledAmounts = {};
+          for (var pf = 0; pf < costTypes.length; pf++) {
+            var pfRt = costTypes[pf];
+            var pfAmt = recipe.cost[pfRt];
+            if (totalIngredientSave > 0 && pfAmt > 1 && Math.random() < totalIngredientSave) {
+              pfAmt = pfAmt - 1;
+            }
+            _prerolledAmounts[pfRt] = pfAmt;
+          }
+          var _inv = accounts.getMMOInventory(key);
+          for (var pfc = 0; pfc < costTypes.length; pfc++) {
+            var pfcRt = costTypes[pfc];
+            var pfcHave = (_inv && _inv[pfcRt]) ? _inv[pfcRt] : 0;
+            if (pfcHave < _prerolledAmounts[pfcRt]) {
+              socket.emit('craft_error', {
+                message: 'Not enough ' + pfcRt.replace(/_/g, ' ') + ' (' + pfcHave + '/' + _prerolledAmounts[pfcRt] + ')',
+              });
+              return;
+            }
+          }
+
+          // --- Deduct resources (amounts already rolled above) ---
           for (var j = 0; j < costTypes.length; j++) {
             var rt = costTypes[j];
-            var amt = recipe.cost[rt];
-            // Perk + Card: ingredientSaveChance — roll per ingredient type to save 1 unit
-            if (totalIngredientSave > 0 && amt > 1) {
-              if (Math.random() < totalIngredientSave) {
-                amt = amt - 1; // save 1 of this ingredient (min cost 1 enforced by amt > 1 guard)
-              }
-            }
+            var amt = _prerolledAmounts[rt];
             var result = accounts.removeResource(key, rt, amt);
             if (result === null) {
               socket.emit('craft_error', {

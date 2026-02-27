@@ -4439,7 +4439,7 @@ function startEnemyTurn(combat, unitId) {
               targetUnit.hp = Math.min(targetUnit.maxHp, targetUnit.hp + damageDiff);
             } else if (targetUnit && !targetUnit.alive && damageDiff >= playerAttackEvt.actualDamage) {
               // Target died but reaction would have saved them — revive
-              targetUnit.hp = damageDiff;
+              targetUnit.hp = Math.min(targetUnit.maxHp || 1, damageDiff);
               targetUnit.alive = true;
             }
             // Update the event with modified values

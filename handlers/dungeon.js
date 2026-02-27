@@ -5,6 +5,8 @@
 //          dungeon_camp_place, dungeon_camp_action, dungeon_guild_signup,
 //          dungeon_quest_list, dungeon_quest_complete, dungeon_leaderboard
 
+var fs = require('fs');
+var path = require('path');
 var dungeonData = require('../dungeon-data');
 var rpgData = require('../rpg-data');
 var dungeonAI = require('../dungeon-ai');
@@ -36,6 +38,9 @@ var ANIMAL_SPEAK_CATEGORIES = dungeonData.ANIMAL_SPEAK_CATEGORIES;
 
 // Chest tier order for treasure_vault chestTierBonus upgrade and delving perk
 var CHEST_TIER_ORDER = ['common', 'uncommon', 'rare', 'legendary'];
+
+// Lich tower dungeon ID (used by lich raid and corruption cleanse)
+var LICH_TOWER_DUNGEON_ID = 'lich_tower';
 
 function upgradeChestTier(baseTier, steps) {
   if (steps <= 0) return baseTier;
@@ -87,7 +92,29 @@ var campFloors = new Map();         // 'structureId_floor_N' -> floor object
 
 var playerDungeons = new Map();   // socketId -> { dungeonId, floorNum }
 
-var leaderboard = { deepestFloor: [], mostKills: [], fastestBoss: [] };
+var _LEADERBOARD_FILE = path.join(__dirname, '..', 'data', 'leaderboard.json');
+var leaderboard = (function() {
+  try {
+    if (fs.existsSync(_LEADERBOARD_FILE)) {
+      var raw = JSON.parse(fs.readFileSync(_LEADERBOARD_FILE, 'utf8'));
+      return { deepestFloor: raw.deepestFloor || [], mostKills: raw.mostKills || [], fastestBoss: raw.fastestBoss || [] };
+    }
+  } catch (e) { /* fallthrough to default */ }
+  return { deepestFloor: [], mostKills: [], fastestBoss: [] };
+})();
+
+var _leaderboardSaveTimer = null;
+function _saveLeaderboard() {
+  if (_leaderboardSaveTimer) return;
+  _leaderboardSaveTimer = setTimeout(function() {
+    _leaderboardSaveTimer = null;
+    try {
+      var dir = path.dirname(_LEADERBOARD_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(_LEADERBOARD_FILE, JSON.stringify(leaderboard), 'utf8');
+    } catch (e) { console.error('[dungeon] leaderboard save error:', e.message); }
+  }, 2000);
+}
 
 // LRU tracking for empty-floor eviction (Map preserves insertion order for O(1) LRU)
 var floorAccessOrder = new Map();  // zoneId -> { map, mapKey }
@@ -145,6 +172,9 @@ var floorLightMaps = new Map();     // zoneId -> Float32Array (cached light map)
 // Permadeath: downed/bleedout state tracking
 // ---------------------------------------------------------------------------
 var downedPlayers = new Map(); // socketId -> { accKey, zoneId, x, y, timer, dungeonId, floorNum, causeOfDeath, intervalId }
+// Tracks permadeath grace timers for players who disconnected while downed
+// Map<accKey, { timer, dcInfo, causeOfDeath }>
+var downedDisconnectTimers = new Map();
 var BLEEDOUT_DURATION = 120; // seconds
 var REVIVE_DISTANCE = 2; // Manhattan distance tiles
 
@@ -1731,7 +1761,7 @@ function lichRaidComplete() {
 
   // Massive corruption cleanse — if directorLich available, cleanse 50% of all corruption
   if (_directorLich) {
-    _directorLich.cleansCorruption('lich_tower');
+    _directorLich.cleansCorruption(LICH_TOWER_DUNGEON_ID);
   }
 
   // Teleport all players out after a short delay
@@ -3788,6 +3818,23 @@ function triggerPermadeath(socketId, io, state, accounts, accKey, info, causeOfD
   var acc = accounts.loadAccount(accKey);
   if (!acc) return;
 
+  // Non-permadeath characters never get permanently deleted — just revive at town
+  if (!acc.permadeath) {
+    accounts.setLastLocation(accKey, 'starter_town', 800, 400);
+    if (acc.rpgStats) {
+      acc.rpgStats.hp = Math.max(1, Math.floor((acc.rpgStats.maxHp || 100) * 0.25));
+      accounts.saveAccount(acc);
+    }
+    var reviveSocket = io.sockets.sockets.get(socketId);
+    if (reviveSocket) {
+      reviveSocket.emit('death_respawn', {
+        message: (causeOfDeath || 'You have been defeated.') + ' You wake up in town.',
+        zoneId: 'starter_town',
+      });
+    }
+    return;
+  }
+
   var playerName = state.users.get(socketId) ? state.users.get(socketId).name : 'Unknown';
 
   // Build hero snapshot before deletion
@@ -4351,6 +4398,12 @@ module.exports = {
         if (!acc) {
           socket.emit('dungeon_error', { message: 'Account not found' });
           return;
+        }
+
+        // Cancel any pending disconnect-while-downed grace timer on reconnect
+        if (downedDisconnectTimers.has(accKey)) {
+          clearTimeout(downedDisconnectTimers.get(accKey).timer);
+          downedDisconnectTimers.delete(accKey);
         }
 
         // Prison check: jailed players cannot enter dungeons
@@ -5615,11 +5668,6 @@ module.exports = {
     // ------------------------------------------------------------------
     // dungeon_attack — triggers turn-based tactical combat
     // ------------------------------------------------------------------
-    // TODO: When PvP dungeon combat is implemented, apply karma penalties here:
-    //   karma.addKarma(attackerAcc, karma.CRIME_KARMA_COSTS.assault, 'assault');
-    //   karma.addKarma(killerAcc, karma.CRIME_KARMA_COSTS.murder, 'murder');
-    // Only apply in non-PvP zones; PvP-flagged zones should be exempt.
-
     socket.on('dungeon_attack', function(data) {
       try {
         if (!data || typeof data.enemyIndex !== 'number') return;
@@ -5633,7 +5681,7 @@ module.exports = {
         if (!floor) return;
 
         var enemyIndex = Math.floor(data.enemyIndex);
-        if (enemyIndex < 0 || enemyIndex >= floor.enemies.length) return;
+        if (!floor.enemies || enemyIndex < 0 || enemyIndex >= floor.enemies.length) return;
 
         var enemy = floor.enemies[enemyIndex];
         if (enemy.alive === false) {
@@ -7474,7 +7522,7 @@ module.exports = {
     });
 
     socket.on('disconnect', function() {
-      // Permadeath: disconnect while downed = immediate permadeath
+      // Downed while disconnecting: give 30s grace period before triggering permadeath
       var downedInfo = downedPlayers.get(socket.id);
       if (downedInfo) {
         clearInterval(downedInfo.intervalId);
@@ -7482,7 +7530,17 @@ module.exports = {
         var dcAccKey = socketAccountMap.get(socket.id);
         var dcInfo = playerDungeons.get(socket.id);
         if (dcAccKey && dcInfo) {
-          triggerPermadeath(socket.id, io, state, accounts, dcAccKey, dcInfo, downedInfo.causeOfDeath || 'Disconnected while downed');
+          // Cancel any existing grace timer for this account (shouldn't happen, but safe)
+          var existingGrace = downedDisconnectTimers.get(dcAccKey);
+          if (existingGrace) { clearTimeout(existingGrace.timer); }
+          var _dcAccKey = dcAccKey;
+          var _dcInfo = dcInfo;
+          var _dcCause = downedInfo.causeOfDeath || 'Disconnected while downed';
+          var graceTimer = setTimeout(function() {
+            downedDisconnectTimers.delete(_dcAccKey);
+            triggerPermadeath(null, io, state, accounts, _dcAccKey, _dcInfo, _dcCause);
+          }, 30000);
+          downedDisconnectTimers.set(dcAccKey, { timer: graceTimer, dcInfo: _dcInfo, causeOfDeath: _dcCause });
         }
       }
 
@@ -7549,4 +7607,5 @@ function updateLeaderboardEntry(accKey, playerName, dp) {
   }
   leaderboard.mostKills.sort(function(a, b) { return b.kills - a.kills; });
   if (leaderboard.mostKills.length > 50) leaderboard.mostKills.length = 50;
+  _saveLeaderboard();
 }

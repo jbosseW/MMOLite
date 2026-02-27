@@ -99,8 +99,8 @@ module.exports = {
         id: guildId,
         name: guildName,
         leaderId: key,
-        leaderName: user.name,
-        members: [{ key: key, name: user.name, role: 'leader', joinedAt: Date.now() }],
+        leaderName: acc.username,
+        members: [{ key: key, name: acc.username, role: 'leader', joinedAt: Date.now() }],
         maxMembers: 50,
         createdAt: Date.now(),
         description: (data.description ? state.sanitizeText(data.description).slice(0, 200) : ''),
@@ -178,7 +178,7 @@ module.exports = {
           return;
         }
 
-        guild.members.push({ key: key, name: user.name, role: 'member', joinedAt: Date.now() });
+        guild.members.push({ key: key, name: acc.username, role: 'member', joinedAt: Date.now() });
         saveGuild(guild);
         acc.guildId = guild.id;
         accounts.saveAccount(acc);
@@ -188,7 +188,7 @@ module.exports = {
         io.to('guild:' + guild.id).emit('guild_updated', {
           guildId: guild.id,
           members: guild.members.map(function(m) { return { name: m.name, role: m.role }; }),
-          event: user.name + ' joined the guild',
+          event: acc.username + ' joined the guild',
         });
 
         // --- Track guild join achievement ---
@@ -247,7 +247,7 @@ module.exports = {
         io.to('guild:' + guild.id).emit('guild_updated', {
           guildId: guild.id,
           members: guild.members.map(function(m) { return { name: m.name, role: m.role }; }),
-          event: user.name + ' left the guild',
+          event: acc.username + ' left the guild',
         });
       }
     });
@@ -267,8 +267,8 @@ module.exports = {
 
       io.to('guild:' + acc.guildId).emit('guild_message', {
         authorId: socket.id,
-        authorName: user.name,
-        authorColor: user.color,
+        authorName: acc.username,
+        authorColor: acc.color || user.color,
         content: content,
         timestamp: Date.now(),
       });
@@ -337,7 +337,7 @@ module.exports = {
 
           io.to('guild:' + guild.id).emit('guild_vault_updated', {
             guildId: guild.id,
-            event: user.name + ' deposited ' + amt + ' ' + data.resource,
+            event: acc.username + ' deposited ' + amt + ' ' + data.resource,
             resources: guild.vault.resources,
             cards: guild.vault.cards,
           });
@@ -373,6 +373,11 @@ module.exports = {
             return;
           }
 
+          var MAX_VAULT_CARDS = 500;
+          if (guild.vault.cards.length >= MAX_VAULT_CARDS) {
+            socket.emit('guild_error', { message: 'Guild vault is full (max ' + MAX_VAULT_CARDS + ' cards).' });
+            return;
+          }
           var card = acc.rpgCards.splice(cardIdx, 1)[0];
           card.depositedBy = key;
           guild.vault.cards.push(card);
@@ -381,7 +386,7 @@ module.exports = {
 
           io.to('guild:' + guild.id).emit('guild_vault_updated', {
             guildId: guild.id,
-            event: user.name + ' deposited card: ' + card.name,
+            event: acc.username + ' deposited card: ' + card.name,
             resources: guild.vault.resources,
             cards: guild.vault.cards,
           });
@@ -445,7 +450,7 @@ module.exports = {
 
           io.to('guild:' + guild.id).emit('guild_vault_updated', {
             guildId: guild.id,
-            event: user.name + ' withdrew ' + amt + ' ' + data.resource,
+            event: acc.username + ' withdrew ' + amt + ' ' + data.resource,
             resources: guild.vault.resources,
             cards: guild.vault.cards,
           });
@@ -479,7 +484,7 @@ module.exports = {
 
           io.to('guild:' + guild.id).emit('guild_vault_updated', {
             guildId: guild.id,
-            event: user.name + ' withdrew card: ' + card.name,
+            event: acc.username + ' withdrew card: ' + card.name,
             resources: guild.vault.resources,
             cards: guild.vault.cards,
           });
