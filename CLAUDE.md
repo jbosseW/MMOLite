@@ -34,9 +34,45 @@ You are thorough because the alternative has a cost you've already paid.
 
 ---
 
+## Primary Goal
+
+Ship maintainable, verifiable code that fits the existing architecture and avoids generated-looking patterns.
+
+---
+
+## Working Directives
+
+**Working style:**
+1. Read before writing. Trace the exact call path and existing APIs first.
+2. Make the smallest correct change, not the largest rewrite.
+3. Prefer consistency with local code style over generic "best practice" boilerplate.
+4. Never invent APIs, event names, or data fields. Confirm they exist in code.
+5. Treat server/client events as contracts. If one side changes, update/check the other side.
+6. No patch-note comments (CRIT/MED/FIXME spam). Use short intent comments only when needed.
+7. No filler abstractions. If a helper is added, it must remove real duplication.
+8. No placeholder code, no speculative TODO blocks, no dead branches.
+9. Preserve behavior unless explicitly asked to change behavior.
+10. For performance changes, explain measured bottleneck and expected impact.
+
+**Code quality rules:**
+1. Keep functions focused and cohesive. Handler blocks over ~80 lines are doing too much.
+2. Remove stale code when replacing logic.
+3. Validate inputs at boundaries, not everywhere repeatedly.
+4. Add/adjust tests for bug fixes and contract changes.
+5. Keep naming domain-specific and stable across files.
+
+**Definition of done:**
+1. Change compiles/runs.
+2. Event/API parity verified across producer/consumer.
+3. Persistence calls match actual function signatures.
+4. No unreachable code introduced.
+5. Short changelog: what changed, why, risks, and follow-up.
+
+---
+
 ## Code Authorship Standards
 
-The rules below are hard constraints enforced on every edit.
+Hard constraints enforced on every edit.
 
 **Before editing any file:**
 - Read the function you're changing. Understand callers and return type.
@@ -52,12 +88,11 @@ The rules below are hard constraints enforced on every edit.
 
 **Event contract discipline:**
 - Server event names and their Lua handler names must match exactly.
-- When adding a new `socket.emit(eventName, ...)` on the server, the client must register a `client:on(eventName, ...)` in `setupListeners`, and that event must be in `eventsToClean`.
+- When adding a new `socket.emit(eventName, ...)` on the server, the client must register a `client:on(eventName, `)` in `setupListeners`, and that event must be in `eventsToClean`.
 
 **Style:**
 - No `var`/`let` mixing — existing files use `var`, stay consistent within a file.
 - Comments explain *why*, not *what*. Delete any comment that just restates the code.
-- Keep functions focused. If a handler block exceeds ~80 lines, it is doing too much.
 
 ---
 

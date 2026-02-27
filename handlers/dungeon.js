@@ -78,6 +78,9 @@ dungeonVision.setWalkableTiles(WALKABLE_TILES);
 // Shared floor caches (module-level, shared across all sockets)
 // ---------------------------------------------------------------------------
 
+// Floor caches are safe without locking: generateFloor() is synchronous and
+// dungeon_enter is a plain (non-async) handler, so Node's single-threaded event
+// loop guarantees no interleaving between has() and set() calls.
 var riftFloors = new Map();       // floorNum -> floor object
 var riftSeed = null;
 var riftDate = null;

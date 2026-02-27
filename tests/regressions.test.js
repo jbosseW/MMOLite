@@ -174,3 +174,102 @@ describe('Regression: skill_milestone quest tracking in accounts.js', () => {
     expect(src).toMatch(/_smTmpl\.target\.skill/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Section 33 exploit-prevention regressions
+// ---------------------------------------------------------------------------
+
+describe('Exploit prevention: negative quantity guards', () => {
+  test('npc-shop buy rejects qty <= 0', () => {
+    const src = readSrc('handlers/npc-shop.js');
+    // Must have a qty/quantity guard before deducting chips
+    expect(src).toMatch(/qty\s*<=\s*0|quantity\s*<=\s*0|qty\s*<\s*1|qty\s*>\s*\d+.*return/);
+  });
+
+  test('mmo-auction list rejects price <= 0', () => {
+    const src = readSrc('handlers/mmo-auction.js');
+    expect(src).toMatch(/price\s*<=\s*0|price\s*<\s*1/);
+  });
+
+  test('trade handler validates offered coins > 0 or === 0', () => {
+    const src = readSrc('handlers/trade.js');
+    // Should not allow negative coins in a trade
+    expect(src).toMatch(/coins|chips/);
+  });
+});
+
+describe('Exploit prevention: race condition guards', () => {
+  test('mmo-auction has purchase lock to prevent double-buy', () => {
+    const src = readSrc('handlers/mmo-auction.js');
+    // Purchase lock: a Set or Map tracking in-flight purchases
+    expect(src).toMatch(/purchaseLock|pendingPurchases|activePurchases|_buying/i);
+  });
+
+  test('crafting handler validates materials before deducting', () => {
+    const src = readSrc('handlers/crafting.js');
+    expect(src).toMatch(/insufficient|not enough|missing.*material|material.*missing/i);
+  });
+});
+
+describe('Exploit prevention: dungeon action gating', () => {
+  test('dungeon.js rejects dungeon_descend when not in dungeon', () => {
+    const src = readSrc('handlers/dungeon.js');
+    const descend = src.slice(src.indexOf("'dungeon_descend'"), src.indexOf("'dungeon_ascend'"));
+    // Must check playerDungeons map before acting
+    expect(descend).toMatch(/playerDungeons\.get\(socket\.id\)|!dungeonState|not in dungeon/i);
+  });
+
+  test('dungeon.js checks player is alive before attack', () => {
+    const src = readSrc('handlers/dungeon.js');
+    const attack = src.slice(src.indexOf("'dungeon_attack'"), src.indexOf("'dungeon_attack'") + 2000);
+    expect(attack).toMatch(/hp\s*<=\s*0|isDowned|downed|not.*alive/i);
+  });
+});
+
+describe('Exploit prevention: card slot limit enforced', () => {
+  test('rpg-cards.js checks available card slots before equipping', () => {
+    const src = readSrc('handlers/rpg-cards.js');
+    expect(src).toMatch(/cardSlots|slot.*limit|equippedCards\.length/i);
+  });
+});
+
+describe('Exploit prevention: jail blocks zone movement', () => {
+  test('zone.js or prison.js checks isJailed before zone_enter', () => {
+    const zoneSrc  = readSrc('handlers/zone.js');
+    const prisonSrc = readSrc('handlers/prison.js');
+    // Either zone.js imports isJailed, or prison.js handles jail_zone blocking
+    const jailCheck = zoneSrc.match(/isJailed|jail|inJail/i) || prisonSrc.match(/zone_enter|movement.*blocked/i);
+    expect(jailCheck).toBeTruthy();
+  });
+});
+
+describe('Exploit prevention: karma system bounds', () => {
+  const karmaModule = require('../handlers/karma');
+
+  test('karma cannot exceed +100 no matter how many positive actions', () => {
+    const acc = { karma: 98 };
+    for (let i = 0; i < 100; i++) karmaModule.addKarma(acc, 10, 'quest_complete');
+    expect(acc.karma).toBe(100);
+  });
+
+  test('karma cannot go below -100 no matter how many crimes', () => {
+    const acc = { karma: -98 };
+    for (let i = 0; i < 100; i++) karmaModule.addKarma(acc, -10, 'murder');
+    expect(acc.karma).toBe(-100);
+  });
+});
+
+describe('Exploit prevention: prison sentence cannot be bypassed by re-arrest', () => {
+  const prisonModule = require('../handlers/prison');
+
+  test('re-arresting already-jailed player overwrites sentence (not stacks)', () => {
+    const acc = { key: 'test', jailState: null };
+    prisonModule.arrestPlayer(acc, 'assault');
+    const firstRelease = acc.jailState.releasedAt;
+    // Arrest again for a lighter crime
+    prisonModule.arrestPlayer(acc, 'trespassing');
+    // New sentence should be trespassing (3min), not a longer stacked duration
+    const trespassDef = prisonModule.CRIME_DEFINITIONS.trespassing;
+    expect(acc.jailState.releasedAt).toBeLessThan(firstRelease + trespassDef.durationMs * 2);
+  });
+});

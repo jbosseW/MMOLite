@@ -7238,8 +7238,8 @@ function executeAbility(combat, unitId, abilityCardId, targetX, targetY) {
   }
   var aoeRadius = combatCard.aoeRadius || 0;
 
-  // TODO: If card.chargeTime > 0, implement FFT-style delayed casting.
-  // For now, all abilities apply immediately regardless of chargeTime.
+  // chargeTime is defined on some cards but delayed casting is not yet implemented.
+  // All abilities apply immediately regardless of chargeTime.
 
   switch (cardType) {
 

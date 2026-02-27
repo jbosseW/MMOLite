@@ -9,6 +9,7 @@ var knowledgeHandler = require('./knowledge');
 var overworldStructures = require('../overworld-structures');
 var overworldRifts = require('../overworld-rifts');
 var petsHandler = require('./pets');
+var moderation = require('./mmo-moderation');
 
 // Module-level move batching — shared across all socket connections
 var _moveBatch = new Map();
@@ -16,7 +17,7 @@ var _moveBatchStarted = false;
 var _moveBatchIO = null;
 var _moveBatchState = null;
 
-// Module-level spatial grid — shared across all sockets for cross-player proximity lookups (MED-1)
+// Module-level spatial grid — shared across all sockets for cross-player proximity lookups
 var _spatialGrids = new Map();    // zoneId -> Map<'cx,cy', Set<socketId>>
 var _playerChunkMap = new Map();  // socketId -> 'cx,cy' key (for cleanup)
 var _playerZoneMap = new Map();   // socketId -> zoneId (for cleanup)
@@ -119,7 +120,7 @@ module.exports = {
     _startMoveBatchTicker(io, state);
 
     // -----------------------------------------------------------------------
-    // Spatial grid: module-level, keyed by zoneId for cross-player lookups (MED-1)
+    // Spatial grid: module-level, keyed by zoneId for cross-player lookups
     // -----------------------------------------------------------------------
     _GRID_CELL_SIZE = CHUNK_SIZE;  // sync module-level constant with runtime value
 
@@ -365,7 +366,7 @@ module.exports = {
 
       // For overworld/chunk-based zones, validate spawn position
       if (zone.chunkCache && state.worldgen) {
-        // Race is permanent after character creation — use cached value on user object (CRIT-5)
+        // Race is permanent after character creation — use cached value on user object
         var spawnRace = user.race || null;
         if ((spawnX === 0 && spawnY === 0) || !state.worldgen.isWalkable(spawnX, spawnY, spawnRace)) {
           var sp = state.worldgen.getSpawnPoint();
@@ -532,7 +533,7 @@ module.exports = {
           var _mcKey = socketAccountMap.get(socket.id);
           if (_mcKey) {
             var _mcAcc = accounts.loadAccount(_mcKey);
-            // Race is permanent — use cached value on user object (CRIT-5)
+            // Race is permanent — use cached value on user object
             _mc = { mount: _mcAcc ? _mcAcc.mount : null, race: user.race || null, ts: now };
           } else {
             _mc = { mount: null, race: user.race || null, ts: now };
@@ -717,6 +718,13 @@ module.exports = {
       if (!checkEventRate(socket, 'zone_chat', 10, 5000)) return;
       if (!data || typeof data.message !== 'string') return;
 
+      // Server-side mute enforcement — client-side mute UI is not sufficient
+      var chatKey = socketAccountMap.get(socket.id);
+      if (chatKey && moderation.isMuted(chatKey)) {
+        socket.emit('zone_message', { authorName: 'System', authorColor: '#FF4444', message: 'You are muted.' });
+        return;
+      }
+
       var zoneId = state.playerZones.get(socket.id);
       if (!zoneId) return;
 
@@ -803,7 +811,7 @@ module.exports = {
         return;
       }
 
-      // Check skill level — load account ONCE for entire handler (CRIT-2)
+      // Load account once here — all harvest sub-operations below reuse this reference
       var accKey = socketAccountMap.get(socket.id);
       if (!accKey) return;
       var account = accounts.loadAccount(accKey);
@@ -864,7 +872,7 @@ module.exports = {
         if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 0.90);
       }
 
-      // Award XP — pass pre-loaded account to avoid redundant loadAccount (CRIT-2)
+      // Award XP — pass pre-loaded account to avoid redundant loadAccount
       var xpRate = (deps.serverRules && deps.serverRules.xpRate) ? deps.serverRules.xpRate : undefined;
       var xpResult = accounts.addSkillXp(accKey, resource.skill, harvestXpAmount, xpRate, account);
 
@@ -933,7 +941,7 @@ module.exports = {
         mithril_pickaxe:   { yield: 4, xpMult: 1.25 },
       };
       var harvestAmount = 1;
-      // Use pre-loaded account for equipment and inventory (CRIT-2)
+      // Use pre-loaded account for equipment and inventory
       var equipment = account.equipment || null;
       if (equipment) {
         var inv = account.mmoInventory || null;
@@ -961,7 +969,7 @@ module.exports = {
         }
       }
 
-      // Apply equipped card effects to gathering — pass pre-loaded account (CRIT-2)
+      // Apply equipped card effects to gathering
       var cardEffects = accounts.getEquippedCardEffects ? accounts.getEquippedCardEffects(accKey, account) : [];
       var gatherBonus = 0;
       var doubleGatherChance = 0;
@@ -1089,7 +1097,7 @@ module.exports = {
       }
 
       // --- Tool durability loss: 0.2% per harvest for axes/pickaxes ---
-      // Uses pre-loaded account and cardEffects from above (CRIT-2)
+      // Uses pre-loaded account and cardEffects from above
       var harvestDurWarnings = [];
       try {
         if (resource.skill === 'woodcutting' || resource.skill === 'mining') {

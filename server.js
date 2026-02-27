@@ -154,9 +154,9 @@ if (process.env.OFFLINE_MODE !== '1') {
         console.warn('[server] Could not attach Redis adapter:', err.message);
       }
       // Initialize cross-process state sync
-      state.initSync(redis).catch(function() {});
+      state.initSync(redis).catch(function(err) { console.warn('[server] Redis state sync failed, running single-process:', err.message); });
     }
-  }).catch(function() {});
+  }).catch(function(err) { console.warn('[server] Redis connection failed:', err.message); });
 }
 
 setupSocket(io);

@@ -484,7 +484,7 @@
 | 13.4.3 | Enemy attacks back on its turn | Player HP reduced correctly |
 | 13.4.4 | Kill an enemy | XP awarded, enemy corpse spawns |
 | 13.4.5 | `dungeon_examine_corpse` | Loot table shown |
-| 13.4.6 | Player HP reaches 0 | Player downed (permadeath); `permadeath_downed` event |
+| 13.4.6 | Player HP reaches 0 | Player downed; `player_downed` event (bleedout timer starts; ally can revive within window) |
 | 13.4.7 | Adjacent ally uses `revive_player` within 2 tiles | Player revived |
 | 13.4.8 | No one revives downed player in time | Permadeath confirmed; teleported to town |
 | 13.4.9 | Press `F` in dungeon — weapon special attack | Fires if charge is full; charge resets |
@@ -955,7 +955,7 @@ These are confirmed incomplete features — note if they behave differently than
 |---|-----------|----------------------|
 | 35.1 | Guild persistence: guilds lost on server restart | ☐ Confirmed |
 | 35.2 | Auction house listings: lost on server restart | ☐ Confirmed |
-| 35.3 | Quest progress not tracked (overworld quests) | ☐ Confirmed |
+| ~~35.3~~ | ~~Quest progress not tracked (overworld quests)~~ | **FIXED** — gather/craft/kill/skill_milestone/dungeon tracking is now wired. `quest_list`, `quest_accept`, `quest_turnin` all implemented in overworld.js. |
 | 35.4 | PvP combat not implemented | ☐ Confirmed |
 | 35.5 | Dungeon skills (dungeon_dwelling/delving) have no in-game effect | ☐ Confirmed |
 | 35.6 | Evo-linked card affixes not checked during evolution/fusion | ☐ Confirmed |

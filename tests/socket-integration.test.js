@@ -74,27 +74,28 @@ afterAll((done) => {
 // ---------------------------------------------------------------------------
 
 describe('Socket connection', () => {
-  test('client can connect to server', (done) => {
+  // Combine connect + identity into one test to avoid race condition:
+  // identity is emitted on connection, so the listener must be registered
+  // before the socket is created.
+  test('client connects and receives identity', (done) => {
     if (!io_client) return done();
-    testSocket = io_client(`http://localhost:${serverPort}`, { timeout: 3000 });
-    testSocket.on('connect', () => {
-      expect(testSocket.connected).toBe(true);
-      done();
-    });
-    testSocket.on('connect_error', (err) => done(err));
-  });
+    let identityOk = false;
+    let connectOk = false;
+    const finish = () => { if (identityOk && connectOk) done(); };
 
-  test('server emits identity on connect', (done) => {
-    if (!io_client || !testSocket) return done();
+    testSocket = io_client(`http://localhost:${serverPort}`, { timeout: 5000 });
     testSocket.on('identity', (data) => {
       expect(data).toHaveProperty('id');
       expect(data).toHaveProperty('name', 'TestBot');
-      done();
+      identityOk = true;
+      finish();
     });
-    // If already connected, identity was already sent — reconnect check
-    if (testSocket.connected) {
-      testSocket.emit('ping_server');
-    }
+    testSocket.on('connect', () => {
+      expect(testSocket.connected).toBe(true);
+      connectOk = true;
+      finish();
+    });
+    testSocket.on('connect_error', (err) => done(err));
   });
 });
 

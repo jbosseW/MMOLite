@@ -75,7 +75,7 @@ module.exports = {
           socket._mmoliteSessionToken = null;
         }
 
-        // Clean up survival visited chunks to prevent memory leak (MED-3)
+        // Clean up survival visited chunks to prevent memory leak
         if (accKey && state._survivalVisitedChunks) {
           state._survivalVisitedChunks.delete(accKey);
         }

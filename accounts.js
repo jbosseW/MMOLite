@@ -983,7 +983,7 @@ function loadAccount(key) {
           keyHashMap.set(_keyHash(key), key);
           _updateTagIndex(dbAccount, key);
         }
-      }).catch(function() {});
+      }).catch(function(err) { console.warn('[accounts] db cache load failed:', err.message); });
     }
     return null;
   }
@@ -1019,7 +1019,7 @@ function saveAccount(account) {
 
   // Dual-write to PostgreSQL (fire-and-forget, file is still primary)
   if (db && db.isConnected) {
-    db.saveAccount(account.key, account).catch(function() {});
+    db.saveAccount(account.key, account).catch(function(err) { console.warn('[accounts] db save failed for', account.key, ':', err.message); });
   }
 
   return true;
@@ -1336,7 +1336,7 @@ function getLeaderboard(limit) {
         _leaderboardCache = entries;
         _leaderboardCacheTime = Date.now();
       }
-    }).catch(function() {});
+    }).catch(function(err) { console.warn('[accounts] db leaderboard fetch failed:', err.message); });
   } else {
     // Trigger non-blocking file scan refresh in the background
     _refreshLeaderboardAsync();

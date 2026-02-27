@@ -19,12 +19,60 @@
 
 'use strict';
 
+const crypto = require('crypto');
+const http   = require('http');
+const https  = require('https');
+
 let io;
 try {
   io = require('socket.io-client');
 } catch (e) {
   console.error('socket.io-client not installed. Run: npm install --save-dev socket.io-client');
   process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// PoW helpers — mirrors pow.js on the server side
+// ---------------------------------------------------------------------------
+
+function hasLeadingZeros(hashBuf, difficulty) {
+  const fullBytes = Math.floor(difficulty / 8);
+  for (let i = 0; i < fullBytes; i++) {
+    if (hashBuf[i] !== 0) return false;
+  }
+  const remainBits = difficulty % 8;
+  if (remainBits > 0) {
+    const mask = 0xff << (8 - remainBits) & 0xff;
+    if ((hashBuf[fullBytes] & mask) !== 0) return false;
+  }
+  return true;
+}
+
+function solvePoW(challenge, difficulty) {
+  let nonce = 0;
+  while (true) {
+    const n = nonce.toString(36);
+    const hash = crypto.createHash('sha256').update(challenge + n).digest();
+    if (hasLeadingZeros(hash, difficulty)) return n;
+    nonce++;
+  }
+}
+
+function fetchChallenge(baseUrl, callback) {
+  const url = baseUrl.replace(/\/$/, '') + '/api/pow/challenge?type=connect';
+  const lib = url.startsWith('https') ? https : http;
+  lib.get(url, (res) => {
+    let body = '';
+    res.on('data', (d) => { body += d; });
+    res.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        callback(null, data);
+      } catch (e) {
+        callback(e);
+      }
+    });
+  }).on('error', callback);
 }
 
 // ---------------------------------------------------------------------------
@@ -103,23 +151,20 @@ function createBot(index) {
     send('ping_server', {});
   }
 
-  function connect() {
+  function connectWithAuth(powChallenge, powNonce) {
     socket = io(SERVER_URL, {
       timeout: 10000,
       reconnection: false,
-      query: {
-        username: botName,
-        password: botPin,
-        botTest: '1',
+      auth: {
+        name: botName,
+        powChallenge: powChallenge,
+        powNonce: powNonce,
       },
     });
 
     socket.on('connect', () => {
       connected = true;
       metrics.connected++;
-
-      // Authenticate via temp account
-      send('account_login', { username: botName, pin: botPin, createIfMissing: true });
     });
 
     socket.on('connect_error', (err) => {
@@ -201,6 +246,18 @@ function createBot(index) {
     if (VERBOSE) {
       console.log('[bot' + index + '] tx=' + txCount + ' rx=' + rxCount);
     }
+  }
+
+  function connect() {
+    fetchChallenge(SERVER_URL, (err, data) => {
+      if (err || !data || !data.challenge) {
+        metrics.connectFailed++;
+        if (VERBOSE) console.error('[bot' + index + '] challenge fetch failed:', err && err.message);
+        return;
+      }
+      const nonce = solvePoW(data.challenge, data.difficulty);
+      connectWithAuth(data.challenge, nonce);
+    });
   }
 
   return { connect, stop };

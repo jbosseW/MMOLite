@@ -1,7 +1,24 @@
 // handlers/mmo-moderation.js
 // MMO-specific moderation tools for admins.
 
+// Server-side mute store: accKey -> expiry timestamp (ms).
+// Keyed by account key so mutes survive reconnects.
+var _mutes = new Map();
+
+// Called by zone_chat to enforce server-side mutes.
+function isMuted(accKey) {
+  var expiry = _mutes.get(accKey);
+  if (!expiry) return false;
+  if (Date.now() >= expiry) {
+    _mutes.delete(accKey);
+    return false;
+  }
+  return true;
+}
+
 module.exports = {
+  isMuted: isMuted,
+
   init(io, socket, deps) {
     var { user, state, socketAccountMap, accounts, checkEventRate, isModerator } = deps;
 
@@ -19,8 +36,12 @@ module.exports = {
         return;
       }
 
-      // TODO: Add mute tracking (duration, etc.)
       var duration = data.duration || 300; // default 5 minutes
+      var targetKey = socketAccountMap.get(data.targetId);
+      if (targetKey) {
+        // Store expiry by account key so mute survives reconnect
+        _mutes.set(targetKey, Date.now() + duration * 1000);
+      }
 
       io.to(data.targetId).emit('mod_muted', {
         duration: duration,

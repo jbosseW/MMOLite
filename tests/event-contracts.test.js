@@ -76,9 +76,11 @@ const KNOWN_SERVER_ONLY = new Set([
 ]);
 
 // Events the client listens to that aren't emitted by current server code
-// (e.g. future UI hooks, or emitted by external systems).
+// (e.g. future UI hooks, or emitted via non-standard variable names the regex misses).
 const KNOWN_CLIENT_EXTRA = new Set([
   'connect', 'disconnect', 'connect_error',
+  // Emitted via targetSocket.emit() in dungeon.js — regex only matches socket/io/ns vars
+  'permadeath_triggered',
 ]);
 
 // ---------------------------------------------------------------

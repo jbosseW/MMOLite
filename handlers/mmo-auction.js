@@ -28,7 +28,7 @@ var _sellerLocks = new Set();
 // Secondary index: sellerKey -> Set<listingId> for O(1) seller lookups
 var sellerIndex = new Map();
 
-// Scoped auction update broadcast — only notify sockets currently viewing the auction (MED-2 perf fix)
+// Scoped auction update broadcast — only notify sockets currently viewing the auction
 var _auctionViewers = new Set(); // socket IDs currently viewing auction
 var _auctionUpdateTimer = null;
 var _auctionIo = null;
@@ -159,7 +159,7 @@ module.exports = {
     var { user, socketAccountMap, accounts, checkEventRate } = deps;
     if (!_accounts) _accounts = accounts; // capture accounts ref for cleanExpired
 
-    // Track auction viewers for scoped update broadcasts (MED-2 perf fix)
+    // Track auction viewers for scoped update broadcasts
     // When the client sends mmo_auction_browse, it means the auction UI is open.
     // The client also sends auction_close when closing the panel (if supported).
     // Clean up on disconnect to prevent stale entries.

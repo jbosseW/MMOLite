@@ -41,12 +41,10 @@ local moveTimer = 0
 local MOVE_SEND_RATE = 1/8  -- send position 8 times per second (reduced for scalability)
 
 -- Sprint & Stamina
--- TODO(stamina-v2): These constants should become dynamic based on:
---   - Cooking skill: cooked food restores stamina (sprint.FOOD_RESTORE)
---   - Cards/perks: modify sprint.MAX, sprint.MULTIPLIER, drain/regen rates
---   - Race traits: e.g. Orc +25% stamina, Goblin faster regen
---   - Equipment: boots could reduce drain, armor could increase it
---   - Stat scaling: Vigor could increase max, Finesse could reduce drain
+-- These are static constants pending stamina-v2 server integration.
+-- When stamina becomes server-authoritative, these will be replaced by
+-- values pushed from the server (cooking skill, cards/perks, race traits,
+-- equipment, Vigor/Finesse stat scaling).
 -- Sprint & Stamina state (grouped to reduce upvalues)
 local sprint = {
     MULTIPLIER = 2.0,
@@ -999,6 +997,8 @@ function game.setupListeners()
         "mmo_auction_listings", "mmo_auction_listed", "mmo_auction_bought",
         "mmo_auction_cancelled", "mmo_auction_my_results", "mmo_auction_error",
         "mmo_auction_update",
+        -- Affliction cure events
+        "cure_success", "cure_error",
     }
     for _, evt in ipairs(eventsToClean) do
         client:off(evt)
@@ -4286,6 +4286,40 @@ function game.setupListeners()
         npcDialogue.text = data.text or "..."
         npcDialogue.choices = data.choices or {}
         npcDialogue.npcId = data.npcId or ""
+    end)
+
+    -- ========================================================================
+    -- Affliction cure events (lycanthropy, vampire exposure)
+    -- ========================================================================
+
+    client:on("cure_success", function(data)
+        if not data then return end
+        -- Update coin display with the authoritative remaining value from server
+        if data.coinsRemaining ~= nil and account then
+            account.coins = data.coinsRemaining
+        end
+        -- Show result in chat as a system message
+        table.insert(chat.messages, {
+            authorName = "System",
+            authorColor = "#44FF88",
+            text = data.message or "Affliction cured.",
+            isSystem = true,
+        })
+        -- Floating text on player
+        local me = players[myId]
+        if me then
+            addFloatingText({ text = "Cured!", x = me.x, y = me.y - 40, color = {0.3, 1, 0.5}, timer = 2.5 })
+        end
+    end)
+
+    client:on("cure_error", function(data)
+        if not data then return end
+        table.insert(chat.messages, {
+            authorName = "System",
+            authorColor = "#FF4444",
+            text = data.message or "Cure failed.",
+            isSystem = true,
+        })
     end)
 
     client:on("npc_dialogue_end", function(data)
@@ -17031,6 +17065,8 @@ function game.unload()
         "corruption_cleanse_result", "corruption_card_cleanse_result",
         "tc_boss_phase_change", "tc_units_spawned", "tc_corruption_zones",
         "tc_boss_soul_harvest", "tc_boss_attack",
+        -- Affliction cure events
+        "cure_success", "cure_error",
     }
     for _, evt in ipairs(eventsToClean) do
         client:off(evt)
