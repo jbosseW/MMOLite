@@ -107,7 +107,8 @@ function init(io, socket, deps) {
       return;
     }
 
-    account.chips = (account.chips || 0) - bail;
+    var newChips = accounts.updateChips(key, -bail);
+    if (newChips !== null) account.chips = newChips;
     releasePlayer(account);
     accounts.saveAccount(account);
 

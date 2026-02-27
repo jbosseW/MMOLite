@@ -945,7 +945,7 @@ function calculateDamage(attacker, target) {
   }
 
   if (attacker.type === 'player') {
-    // Player attacking enemy (or player in PvP, but we only expect PvE)
+    // Player attacking enemy (PvE only)
     var stats = attacker.combat || {};
     var might = stats.might || 5;
     var level = attacker.level || 1;

@@ -88,7 +88,12 @@ function init(io, socket, deps) {
       return;
     }
 
-    account.chips -= hiringFee;
+    var newChips = accounts.updateChips(key, -hiringFee);
+    if (newChips === null) {
+      socket.emit('companion_error', { message: 'Failed to process payment.' });
+      return;
+    }
+    account.chips = newChips;
     var companion = {
       id: crypto.randomBytes(6).toString('hex'),
       class: data.companionClass,
