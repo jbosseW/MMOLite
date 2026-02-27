@@ -18,8 +18,10 @@ var TILE_EFFECTS = {
   WATER:       { speedMod: -25, duration: -1, element: 'water' },   // permanent until evaporated
   OIL:         { duration: -1, element: 'oil' },                     // permanent, flammable
   BRAMBLE:     { damage: 3,  moveCost: 2, duration: 5 },            // 5 turns
-  TURRET:      { damage: 6, duration: 3, element: 'mechanical', isStructure: true },
-  SANCTUARY:   { healPercent: 0.05, duration: 4, element: 'holy', allySafe: true },
+  TURRET:        { damage: 6, duration: 3, element: 'mechanical', isStructure: true, range: 4, hp: 20 },
+  HEAL_TURRET:   { heal: 8, healPercent: 0.05, duration: 3, element: 'holy', isStructure: true, range: 4, hp: 15 },
+  SHIELD_TURRET: { shield: 12, duration: 3, element: 'mechanical', isStructure: true, range: 3, hp: 18 },
+  SANCTUARY:     { healPercent: 0.05, duration: 4, element: 'holy', allySafe: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -200,6 +202,25 @@ function _placeEffect(combat, x, y, type, sourceUnitId) {
     sourceUnitId: sourceUnitId || null,
     turnCreated: combat.turn || 0,
   };
+
+  // Structure types: track HP per instance and type-specific stats
+  if (def.isStructure) {
+    effect.currentHp = def.hp || 20;
+    effect.maxHp     = def.hp || 20;
+    if (type === 'TURRET') {
+      effect.damage  = def.damage || 6;
+      effect.range   = def.range  || 4;
+      effect.targets = 1;        // how many enemies to shoot (affix can increase)
+      effect.lifedrain = 0;      // fraction of damage that heals deployer (affix)
+    } else if (type === 'HEAL_TURRET') {
+      effect.heal        = def.heal        || 8;
+      effect.healPercent = def.healPercent || 0.05;
+      effect.range       = def.range       || 4;
+    } else if (type === 'SHIELD_TURRET') {
+      effect.shield = def.shield || 12;
+      effect.range  = def.range  || 3;
+    }
+  }
 
   if (!combat.tileEffects) combat.tileEffects = [];
   combat.tileEffects.push(effect);
@@ -518,6 +539,354 @@ function processTileEffects(combat) {
       }
     }
 
+    // TURRET: shoot up to te.targets nearest enemies within range each turn
+    if (te.type === 'TURRET') {
+      var turrRange   = te.range   || TILE_EFFECTS.TURRET.range;
+      var turrDmg     = te.damage  || TILE_EFFECTS.TURRET.damage;
+      var turrTargets = te.targets || 1;
+      var turrDrain   = te.lifedrain || 0;
+      var allTUs      = getAllUnits(combat);
+      // Collect enemies in range sorted by distance
+      var inRange = [];
+      for (var tu = 0; tu < allTUs.length; tu++) {
+        var tUnit = allTUs[tu];
+        if (tUnit.ref.type === 'player') continue;
+        var tDist = manhattanDistance(te.x, te.y, tUnit.ref.x, tUnit.ref.y);
+        if (tDist <= turrRange) inRange.push({ unit: tUnit, dist: tDist });
+      }
+      inRange.sort(function(a, b) { return a.dist - b.dist; });
+      // Element -> tile-effect map for DOT placement
+      var _dotTileMap = { poison: 'POISONED', fire: 'BURNING', ice: 'FROZEN', lightning: 'ELECTRIFIED' };
+
+      var shotsLeft = turrTargets;
+      for (var tsi = 0; tsi < inRange.length && shotsLeft > 0; tsi++) {
+        var target = inRange[tsi].unit;
+
+        // Crit check
+        var _isCrit    = (te.critChance > 0) && (Math.random() < te.critChance);
+        var _shotDmg   = _isCrit ? Math.round(turrDmg * 2) : turrDmg;
+        // Element override (random_element_convert): change reported element of base shot
+        var _baseElem  = te.elementOverride || 'mechanical';
+
+        target.ref.hp = Math.max(0, (target.ref.hp || 0) - _shotDmg);
+        result.damages.push({
+          unitId:   target.id,
+          damage:   _shotDmg,
+          type:     'TURRET',
+          element:  _baseElem,
+          isCrit:   _isCrit,
+          sourceId: te.id,
+          turretX:  te.x,
+          turretY:  te.y,
+        });
+
+        // Elemental bonuses from affixes / mutations
+        if (te.elementBonuses && te.elementBonuses.length > 0) {
+          for (var ebi = 0; ebi < te.elementBonuses.length; ebi++) {
+            var _eb = te.elementBonuses[ebi];
+
+            if (_eb.bonusType === 'flat') {
+              // Undead multiplier (holy affix: undead_mult: 2.0)
+              var _elemMult = (_eb.undeadMult && _eb.undeadMult > 1 && target.ref.isUndead) ? _eb.undeadMult : 1;
+              var _elemDmg  = Math.round(_eb.value * _elemMult);
+              target.ref.hp = Math.max(0, target.ref.hp - _elemDmg);
+              result.damages.push({
+                unitId:   target.id,
+                damage:   _elemDmg,
+                type:     'TURRET_ELEMENTAL',
+                element:  _eb.element,
+                sourceId: te.id,
+                turretX:  te.x,
+                turretY:  te.y,
+              });
+              // Ice slow chance: set a slow flag on the enemy unit (dungeon-combat reads this)
+              if (_eb.slowChance > 0 && Math.random() < _eb.slowChance) {
+                target.ref.slowed = (target.ref.slowed || 0) + 2; // slow for 2 turns
+              }
+
+            } else if (_eb.bonusType === 'dot') {
+              // Place a tile effect at the enemy's current position
+              var _dotTile = _dotTileMap[_eb.element];
+              if (_dotTile && target.ref.x !== undefined && target.ref.y !== undefined) {
+                createTileEffect(combat, target.ref.x, target.ref.y, _dotTile, te.sourceUnitId);
+                result.damages.push({
+                  unitId:   target.id,
+                  damage:   0,
+                  type:     'TURRET_DOT_PLACED',
+                  element:  _eb.element,
+                  dotType:  _dotTile,
+                  sourceId: te.id,
+                  turretX:  te.x,
+                  turretY:  te.y,
+                });
+              }
+            }
+          }
+        }
+
+        // --- On-hit effects (status, movement) ---
+        if (te.onHitEffects && te.onHitEffects.length > 0 && target.ref.alive) {
+          for (var ohi = 0; ohi < te.onHitEffects.length; ohi++) {
+            var _oh = te.onHitEffects[ohi];
+            if (!_oh) continue;
+
+            if (_oh.type === 'bleed') {
+              if (Math.random() < (_oh.chance || 0.25)) {
+                if (!target.ref.statusEffects) target.ref.statusEffects = [];
+                target.ref.statusEffects.push({ name: 'bleeding', type: 'debuff', duration: _oh.duration || 2, tickDamage: _oh.tickDamage || 4, sourceId: te.sourceUnitId });
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'bleeding', sourceId: te.id });
+              }
+            } else if (_oh.type === 'burn') {
+              if (Math.random() < (_oh.chance || 0.25)) {
+                createTileEffect(combat, target.ref.x, target.ref.y, 'BURNING', te.sourceUnitId);
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'burning', sourceId: te.id });
+              }
+            } else if (_oh.type === 'slow') {
+              if (Math.random() < (_oh.chance || 0.25)) {
+                target.ref.slowed = (target.ref.slowed || 0) + 2;
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'slowed', sourceId: te.id });
+              }
+            } else if (_oh.type === 'poison') {
+              if (Math.random() < (_oh.chance || 0.20)) {
+                createTileEffect(combat, target.ref.x, target.ref.y, 'POISONED', te.sourceUnitId);
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'poisoned', sourceId: te.id });
+              }
+            } else if (_oh.type === 'stun') {
+              if (Math.random() < (_oh.chance || 0.15)) {
+                if (!target.ref.statusEffects) target.ref.statusEffects = [];
+                target.ref.statusEffects.push({ name: 'stunned', type: 'debuff', duration: _oh.duration || 1, skipTurn: true, sourceId: te.sourceUnitId });
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'stunned', sourceId: te.id });
+              }
+            } else if (_oh.type === 'mark') {
+              if (Math.random() < (_oh.chance || 0.20)) {
+                if (!target.ref.statusEffects) target.ref.statusEffects = [];
+                target.ref.statusEffects.push({ name: 'marked', type: 'debuff', duration: 3, damageTakenBonus: _oh.damageTakenBonus || 0.10, sourceId: te.sourceUnitId });
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'marked', sourceId: te.id });
+              }
+            } else if (_oh.type === 'mana_drain') {
+              var _mdAmt = _oh.value || 4;
+              target.ref.mana = Math.max(0, (target.ref.mana || 0) - _mdAmt);
+              result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'mana_drained', value: _mdAmt, sourceId: te.id });
+            } else if (_oh.type === 'wound') {
+              if (!target.ref.statusEffects) target.ref.statusEffects = [];
+              target.ref.statusEffects.push({ name: 'wounded', type: 'debuff', duration: 3, healingReduction: _oh.healing_reduction || 0.30, sourceId: te.sourceUnitId });
+              result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_STATUS', status: 'wounded', sourceId: te.id });
+            } else if (_oh.type === 'knockback' || _oh.type === 'push_on_hit' || _oh.type === 'push') {
+              // Push away from turret
+              var _kbTiles = _oh.tiles || 1;
+              var _kbDx = target.ref.x - te.x;
+              var _kbDy = target.ref.y - te.y;
+              var _kbLen = Math.sqrt(_kbDx * _kbDx + _kbDy * _kbDy) || 1;
+              var _kbNx = _kbDx / _kbLen;
+              var _kbNy = _kbDy / _kbLen;
+              var _kbFromX = target.ref.x;
+              var _kbFromY = target.ref.y;
+              for (var _kbi = 0; _kbi < _kbTiles; _kbi++) {
+                var _kbNextX = target.ref.x + (_kbNx > 0.5 ? 1 : _kbNx < -0.5 ? -1 : 0);
+                var _kbNextY = target.ref.y + (_kbNy > 0.5 ? 1 : _kbNy < -0.5 ? -1 : 0);
+                if (_kbNextX === target.ref.x && _kbNextY === target.ref.y) break; // no movement
+                target.ref.x = _kbNextX;
+                target.ref.y = _kbNextY;
+              }
+              if (target.ref.x !== _kbFromX || target.ref.y !== _kbFromY) {
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_KNOCKBACK', fromX: _kbFromX, fromY: _kbFromY, toX: target.ref.x, toY: target.ref.y, sourceId: te.id });
+              }
+            } else if (_oh.type === 'pull') {
+              // Pull toward turret
+              var _plTiles = _oh.tiles || 1;
+              var _plDx = te.x - target.ref.x;
+              var _plDy = te.y - target.ref.y;
+              var _plLen = Math.sqrt(_plDx * _plDx + _plDy * _plDy) || 1;
+              var _plNx = _plDx / _plLen;
+              var _plNy = _plDy / _plLen;
+              var _plFromX = target.ref.x;
+              var _plFromY = target.ref.y;
+              for (var _pli = 0; _pli < _plTiles; _pli++) {
+                var _plNextX = target.ref.x + (_plNx > 0.5 ? 1 : _plNx < -0.5 ? -1 : 0);
+                var _plNextY = target.ref.y + (_plNy > 0.5 ? 1 : _plNy < -0.5 ? -1 : 0);
+                if (_plNextX === target.ref.x && _plNextY === target.ref.y) break;
+                // Stop before reaching the turret's own tile
+                if (_plNextX === te.x && _plNextY === te.y) break;
+                target.ref.x = _plNextX;
+                target.ref.y = _plNextY;
+              }
+              if (target.ref.x !== _plFromX || target.ref.y !== _plFromY) {
+                result.damages.push({ unitId: target.id, damage: 0, type: 'TURRET_PULL', fromX: _plFromX, fromY: _plFromY, toX: target.ref.x, toY: target.ref.y, sourceId: te.id });
+              }
+            }
+          }
+        }
+
+        // --- Pierce: hit additional enemies in the same direction ---
+        if (te.pierceTargets > 0 && target.ref.alive !== false) {
+          var _pierceDx = target.ref.x - te.x;
+          var _pierceDy = target.ref.y - te.y;
+          var _pierceLen = Math.sqrt(_pierceDx * _pierceDx + _pierceDy * _pierceDy) || 1;
+          var _pierceNx = _pierceDx / _pierceLen > 0.5 ? 1 : _pierceDx / _pierceLen < -0.5 ? -1 : 0;
+          var _pierceNy = _pierceDy / _pierceLen > 0.5 ? 1 : _pierceDy / _pierceLen < -0.5 ? -1 : 0;
+          var _pierceRemain = te.pierceTargets;
+          var _allPU = getAllUnits(combat);
+          // Sort by distance from turret along the pierce direction
+          for (var _pi2 = 0; _pi2 < _allPU.length && _pierceRemain > 0; _pi2++) {
+            var _pu = _allPU[_pi2];
+            if (_pu.ref.type === 'player') continue;
+            if (_pu.id === target.id) continue;
+            // Must be further along the same axis from the primary target
+            var _puDx = _pu.ref.x - te.x;
+            var _puDy = _pu.ref.y - te.y;
+            var _puDist = manhattanDistance(te.x, te.y, _pu.ref.x, _pu.ref.y);
+            var _tDist  = manhattanDistance(te.x, te.y, target.ref.x, target.ref.y);
+            // Same direction check: dot product of pierce direction with unit offset should be positive and further
+            var _dot = _puDx * _pierceNx + _puDy * _pierceNy;
+            if (_dot <= 0 || _puDist <= _tDist) continue;
+            if (_puDist > turrRange + 1) continue; // within one tile beyond normal range
+            _pu.ref.hp = Math.max(0, (_pu.ref.hp || 0) - turrDmg);
+            result.damages.push({
+              unitId:   _pu.id,
+              damage:   turrDmg,
+              type:     'TURRET_PIERCE',
+              element:  _baseElem,
+              sourceId: te.id,
+              turretX:  te.x,
+              turretY:  te.y,
+            });
+            _pierceRemain--;
+          }
+        }
+
+        // --- Chain shot: bounce to nearest OTHER enemy ---
+        if (te.chainBounces > 0) {
+          var _chainDmg      = Math.round(_shotDmg * (te.chainFalloff || 0.6));
+          var _chainBounces  = te.chainBounces;
+          var _chainLastId   = target.id;
+          var _chainLastX    = target.ref.x;
+          var _chainLastY    = target.ref.y;
+          var _chainHit      = [target.id];
+          for (var _ci = 0; _ci < _chainBounces && _chainDmg > 0; _ci++) {
+            var _allCU      = getAllUnits(combat);
+            var _chainNext  = null;
+            var _chainDist  = Infinity;
+            for (var _cj = 0; _cj < _allCU.length; _cj++) {
+              var _cu = _allCU[_cj];
+              if (_cu.ref.type === 'player') continue;
+              var _alreadyHit = false;
+              for (var _ck = 0; _ck < _chainHit.length; _ck++) { if (_chainHit[_ck] === _cu.id) { _alreadyHit = true; break; } }
+              if (_alreadyHit) continue;
+              var _cd = manhattanDistance(_chainLastX, _chainLastY, _cu.ref.x, _cu.ref.y);
+              if (_cd < _chainDist) { _chainDist = _cd; _chainNext = _cu; }
+            }
+            if (!_chainNext || _chainDist > turrRange + 2) break;
+            _chainNext.ref.hp = Math.max(0, (_chainNext.ref.hp || 0) - _chainDmg);
+            result.damages.push({
+              unitId:   _chainNext.id,
+              damage:   _chainDmg,
+              type:     'TURRET_CHAIN',
+              element:  _baseElem,
+              chainIdx: _ci + 1,
+              sourceId: te.id,
+              turretX:  te.x,
+              turretY:  te.y,
+            });
+            _chainHit.push(_chainNext.id);
+            _chainLastX = _chainNext.ref.x;
+            _chainLastY = _chainNext.ref.y;
+            _chainDmg   = Math.round(_chainDmg * (te.chainFalloff || 0.6));
+          }
+        }
+
+        // Lifedrain: heal the source unit based on total shot damage (base + elemental)
+        if (turrDrain > 0 && te.sourceUnitId) {
+          var drainHeal = Math.max(1, Math.round(_shotDmg * turrDrain));
+          var srcUnit = null;
+          if (combat.units) {
+            if (typeof combat.units.get === 'function') {
+              srcUnit = combat.units.get(te.sourceUnitId);
+            } else {
+              srcUnit = combat.units[te.sourceUnitId];
+            }
+          }
+          if (srcUnit && srcUnit.alive !== false && (srcUnit.hp || 0) > 0) {
+            srcUnit.hp = Math.min(srcUnit.maxHp || srcUnit.hp, (srcUnit.hp || 0) + drainHeal);
+            result.damages.push({
+              unitId:   te.sourceUnitId,
+              damage:   -drainHeal,
+              type:     'TURRET_LIFEDRAIN',
+              isHeal:   true,
+              sourceId: te.id,
+            });
+          }
+        }
+        shotsLeft--;
+      }
+    }
+
+    // HEAL_TURRET: heal up to te.targets lowest-HP allies within range each turn
+    if (te.type === 'HEAL_TURRET') {
+      var hTurrRange   = te.range   || TILE_EFFECTS.HEAL_TURRET.range;
+      var hTurrHealBase = te.heal   || TILE_EFFECTS.HEAL_TURRET.heal;
+      var hTurrTargets  = te.targets || 1;
+      var allHTUs       = getAllUnits(combat);
+      // Collect all allies in range, sorted by HP ascending (lowest first)
+      var hInRange = [];
+      for (var htu = 0; htu < allHTUs.length; htu++) {
+        var htUnit = allHTUs[htu];
+        if (htUnit.ref.type !== 'player') continue;
+        var htDist = manhattanDistance(te.x, te.y, htUnit.ref.x, htUnit.ref.y);
+        if (htDist <= hTurrRange && (htUnit.ref.hp || 0) < (htUnit.ref.maxHp || Infinity)) {
+          hInRange.push(htUnit);
+        }
+      }
+      hInRange.sort(function(a, b) { return (a.ref.hp || 0) - (b.ref.hp || 0); });
+      var hHealed = 0;
+      for (var hhi = 0; hhi < hInRange.length && hHealed < hTurrTargets; hhi++) {
+        var hAlly    = hInRange[hhi];
+        var _hMaxHp  = hAlly.ref.maxHp || 100;
+        var hTurrHeal = Math.max(hTurrHealBase, Math.round(_hMaxHp * (te.healPercent || 0.05)));
+        var actualHeal = Math.min(hTurrHeal, _hMaxHp - hAlly.ref.hp);
+        if (actualHeal <= 0) continue;
+        hAlly.ref.hp += actualHeal;
+        result.damages.push({
+          unitId:   hAlly.id,
+          damage:   -actualHeal,
+          type:     'HEAL_TURRET',
+          isHeal:   true,
+          sourceId: te.id,
+          turretX:  te.x,
+          turretY:  te.y,
+        });
+        hHealed++;
+      }
+    }
+
+    // SHIELD_TURRET: apply a shield buffer to all allies within range each turn
+    if (te.type === 'SHIELD_TURRET') {
+      var sTurrRange  = te.range  || TILE_EFFECTS.SHIELD_TURRET.range;
+      var sTurrShield = te.shield || TILE_EFFECTS.SHIELD_TURRET.shield;
+      var allSTUs     = getAllUnits(combat);
+      for (var stu = 0; stu < allSTUs.length; stu++) {
+        var stUnit = allSTUs[stu];
+        if (stUnit.ref.type !== 'player') continue;
+        var stDist = manhattanDistance(te.x, te.y, stUnit.ref.x, stUnit.ref.y);
+        if (stDist <= sTurrRange) {
+          // Shield absorbs damage before HP; accumulates, decays at start of turn in dungeon-combat
+          stUnit.ref.shieldHp = Math.min(
+            (stUnit.ref.shieldHp || 0) + sTurrShield,
+            sTurrShield * 3   // cap at 3x pulse to prevent runaway stacking
+          );
+          result.damages.push({
+            unitId:    stUnit.id,
+            damage:    0,
+            type:      'SHIELD_TURRET',
+            shieldAmt: sTurrShield,
+            isShield:  true,
+            sourceId:  te.id,
+            turretX:   te.x,
+            turretY:   te.y,
+          });
+        }
+      }
+    }
+
     // ELECTRIFIED with chains: damage all units on WATER tiles (once per round)
     if (te.type === 'ELECTRIFIED' && def.chains && !electrifiedChainDone) {
       electrifiedChainDone = true;
@@ -565,6 +934,45 @@ function processTileEffects(combat) {
 
   combat.tileEffects = kept;
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Turret structure helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply damage to a turret structure (TURRET tile effect).
+ * Removes the turret if its HP drops to 0.
+ * Returns { destroyed, id, currentHp } or null if not found.
+ */
+function damageTurret(combat, turretId, damage) {
+  if (!combat || !combat.tileEffects) return null;
+  for (var i = 0; i < combat.tileEffects.length; i++) {
+    var te = combat.tileEffects[i];
+    var _isStructureType = te.type === 'TURRET' || te.type === 'HEAL_TURRET' || te.type === 'SHIELD_TURRET';
+    if (_isStructureType && te.id === turretId) {
+      te.currentHp = Math.max(0, (te.currentHp || 0) - damage);
+      if (te.currentHp <= 0) {
+        combat.tileEffects.splice(i, 1);
+        return { destroyed: true, id: turretId, type: te.type, x: te.x, y: te.y };
+      }
+      return { destroyed: false, id: turretId, currentHp: te.currentHp, maxHp: te.maxHp };
+    }
+  }
+  return null;
+}
+
+/**
+ * Return the structure tile effect (TURRET, HEAL_TURRET, or SHIELD_TURRET) at (x, y) if one exists, else null.
+ */
+function getTurretAt(combat, x, y) {
+  if (!combat || !combat.tileEffects) return null;
+  for (var i = 0; i < combat.tileEffects.length; i++) {
+    var te = combat.tileEffects[i];
+    var _isStruct = te.type === 'TURRET' || te.type === 'HEAL_TURRET' || te.type === 'SHIELD_TURRET';
+    if (_isStruct && te.x === x && te.y === y) return te;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -654,4 +1062,6 @@ module.exports = {
   getMoveCostModifier: getMoveCostModifier,
   getSpeedModifier: getSpeedModifier,
   doesBlockLOS: doesBlockLOS,
+  damageTurret: damageTurret,
+  getTurretAt: getTurretAt,
 };

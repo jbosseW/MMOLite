@@ -2,6 +2,7 @@
 // Player-to-player trading handler.
 
 var challengesHandler = require('./challenges');
+var rpgData = require('../rpg-data');
 
 // Per-account trade execution lock: prevents a player from executing two trades simultaneously
 var tradeExecLocks = new Set();
@@ -11,12 +12,13 @@ module.exports = {
   _trades: new Map(),
 
   init(io, socket, deps) {
-    var { user, state, socketAccountMap, accounts, checkEventRate } = deps;
+    var { user, state, socketAccountMap, accounts, checkEventRate, applyRateGrace } = deps;
     var trades = this._trades;
 
     // --- trade_request: initiate a trade ---
     socket.on('trade_request', function(data) {
       if (!data || typeof data.targetId !== 'string') return;
+      if (!applyRateGrace(socket, 'trade_request', 6, 10000)) return;
 
       // Must be in same zone
       var myZone = state.playerZones.get(socket.id);
@@ -112,15 +114,23 @@ module.exports = {
           } else if (rawItem.type === 'card' && typeof rawItem.cardInstanceId === 'string') {
             // Validate card exists in player's inventory
             if (offerAcc.rpgCards) {
-              var cardFound = false;
+              var cardObj = null;
               for (var ci = 0; ci < offerAcc.rpgCards.length; ci++) {
                 if (offerAcc.rpgCards[ci].instanceId === rawItem.cardInstanceId) {
-                  cardFound = true;
+                  cardObj = offerAcc.rpgCards[ci];
                   break;
                 }
               }
-              if (cardFound) {
-                validatedItems.push({ type: 'card', cardInstanceId: rawItem.cardInstanceId });
+              if (cardObj) {
+                // Validate card can be traded to the receiver's race
+                var receiverId = (socket.id === trade.initiator) ? trade.target : trade.initiator;
+                var receiverKey = socketAccountMap.get(receiverId);
+                var receiverAcc = receiverKey ? accounts.loadAccount(receiverKey) : null;
+                if (receiverAcc && receiverAcc.race && !rpgData.canTradeCardToRace(cardObj, receiverAcc.race)) {
+                  socket.emit('trade_error', { message: 'That card cannot be traded to a ' + receiverAcc.race + ' character' });
+                } else {
+                  validatedItems.push({ type: 'card', cardInstanceId: rawItem.cardInstanceId });
+                }
               }
             }
           }
@@ -153,6 +163,7 @@ module.exports = {
     // --- trade_confirm: lock in your offer ---
     socket.on('trade_confirm', function(data) {
       if (!data || typeof data.tradeId !== 'string') return;
+      if (!applyRateGrace(socket, 'trade_confirm', 6, 5000)) return;
 
       var trade = trades.get(data.tradeId);
       if (!trade || trade.state !== 'active') return;
@@ -216,10 +227,11 @@ module.exports = {
           }
 
           // Re-validate all offered resources and cards still exist
-          function validateOffer(accKey, acc, offer, label) {
+          function validateOffer(accKey, acc, offer, receiverAcc, label) {
             var inv = accounts.getMMOInventory(accKey);
             if (!inv) return label + ' inventory unavailable';
             var items = offer.items || [];
+            var incomingCardCount = 0;
             for (var vi = 0; vi < items.length; vi++) {
               var item = items[vi];
               if (item.type === 'resource' && item.resource && item.amount > 0) {
@@ -228,31 +240,43 @@ module.exports = {
                   return label + ' no longer has enough ' + item.resource.replace(/_/g, ' ');
                 }
               } else if (item.type === 'card' && item.cardInstanceId) {
-                var cardFound = false;
+                var cardObj = null;
                 if (acc.rpgCards) {
                   for (var ci = 0; ci < acc.rpgCards.length; ci++) {
                     if (acc.rpgCards[ci].instanceId === item.cardInstanceId) {
-                      cardFound = true;
+                      cardObj = acc.rpgCards[ci];
                       break;
                     }
                   }
                 }
-                if (!cardFound) {
+                if (!cardObj) {
                   return label + ' no longer has an offered card';
                 }
+                // Re-validate racial trading restrictions
+                if (receiverAcc && receiverAcc.race && !rpgData.canTradeCardToRace(cardObj, receiverAcc.race)) {
+                  return 'A card cannot be traded to a ' + receiverAcc.race + ' character';
+                }
+                incomingCardCount++;
+              }
+            }
+            // Check receiver collection cap
+            if (incomingCardCount > 0 && receiverAcc) {
+              var receiverCards = (receiverAcc.rpgCards || []).length;
+              if (receiverCards + incomingCardCount > rpgData.MAX_CARD_COLLECTION) {
+                return 'Receiver\'s card collection is full (' + rpgData.MAX_CARD_COLLECTION + ' max)';
               }
             }
             return null; // all valid
           }
 
-          var initValidationError = validateOffer(initKey, initAcc, initOffer, 'Initiator');
+          var initValidationError = validateOffer(initKey, initAcc, initOffer, targAcc, 'Initiator');
           if (initValidationError) {
             io.to(trade.initiator).emit('trade_error', { message: 'Trade failed: ' + initValidationError });
             io.to(trade.target).emit('trade_error', { message: 'Trade failed: partner resources changed' });
             trades.delete(trade.id);
             return;
           }
-          var targValidationError = validateOffer(targKey, targAcc, targOffer, 'Partner');
+          var targValidationError = validateOffer(targKey, targAcc, targOffer, initAcc, 'Partner');
           if (targValidationError) {
             io.to(trade.target).emit('trade_error', { message: 'Trade failed: ' + targValidationError });
             io.to(trade.initiator).emit('trade_error', { message: 'Trade failed: partner resources changed' });
@@ -374,6 +398,12 @@ module.exports = {
 
       trade.state = 'cancelled';
       trades.delete(trade.id);
+
+      // Clear execution locks for both parties to prevent orphaned locks (BUG-6)
+      var initKey = socketAccountMap.get(trade.initiator);
+      var targKey = socketAccountMap.get(trade.target);
+      if (initKey) tradeExecLocks.delete(initKey);
+      if (targKey) tradeExecLocks.delete(targKey);
 
       io.to(trade.initiator).emit('trade_cancelled', { tradeId: trade.id, cancelledBy: socket.id });
       io.to(trade.target).emit('trade_cancelled', { tradeId: trade.id, cancelledBy: socket.id });

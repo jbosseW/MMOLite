@@ -5,13 +5,41 @@ var rpgData = require('../rpg-data');
 var dungeonCombat = require('../dungeon-combat');
 var placementModule = require('./placement');
 var challengesHandler = require('./challenges');
+var knowledgeHandler = require('./knowledge');
 var overworldStructures = require('../overworld-structures');
+var overworldRifts = require('../overworld-rifts');
+var petsHandler = require('./pets');
 
 // Module-level move batching — shared across all socket connections
 var _moveBatch = new Map();
 var _moveBatchStarted = false;
 var _moveBatchIO = null;
 var _moveBatchState = null;
+
+// Module-level spatial grid — shared across all sockets for cross-player proximity lookups (MED-1)
+var _spatialGrids = new Map();    // zoneId -> Map<'cx,cy', Set<socketId>>
+var _playerChunkMap = new Map();  // socketId -> 'cx,cy' key (for cleanup)
+var _playerZoneMap = new Map();   // socketId -> zoneId (for cleanup)
+var _GRID_CELL_SIZE = 512;       // one cell per chunk (set from CHUNK_SIZE in init)
+var _SPATIAL_BROADCAST_RADIUS = 3; // broadcast moves to players within 3 chunks
+
+// Module-level spatial lookup (used by batch ticker outside init closure)
+function _gridGetNearby(zoneId, x, y, radiusChunks) {
+  var grid = _spatialGrids.get(zoneId);
+  if (!grid) return [];
+  var cx = Math.floor(x / _GRID_CELL_SIZE);
+  var cy = Math.floor(y / _GRID_CELL_SIZE);
+  var result = [];
+  for (var dy = -radiusChunks; dy <= radiusChunks; dy++) {
+    for (var dx = -radiusChunks; dx <= radiusChunks; dx++) {
+      var cell = grid.get((cx + dx) + ',' + (cy + dy));
+      if (cell) {
+        for (var sid of cell) result.push(sid);
+      }
+    }
+  }
+  return result;
+}
 
 function _startMoveBatchTicker(io, state) {
   if (_moveBatchStarted) return;
@@ -20,7 +48,7 @@ function _startMoveBatchTicker(io, state) {
   _moveBatchState = state;
   setInterval(function() {
     if (_moveBatch.size === 0) return;
-    // Group moves by zone, broadcast to zone room
+    // Group moves by zone
     var zoneGroups = new Map();
     for (var entry of _moveBatch) {
       var sid = entry[0], move = entry[1];
@@ -31,7 +59,29 @@ function _startMoveBatchTicker(io, state) {
     }
     _moveBatch.clear();
     for (var zEntry of zoneGroups) {
-      _moveBatchIO.to('zone:' + zEntry[0]).emit('batch_move', { moves: zEntry[1] });
+      var zoneId = zEntry[0];
+      var moves = zEntry[1];
+      var zone = _moveBatchState.zones.get(zoneId);
+      if (zone && zone.chunkCache) {
+        // Overworld: spatially filtered — each player only gets nearby moves
+        var perRecipient = new Map();
+        for (var i = 0; i < moves.length; i++) {
+          var m = moves[i];
+          var nearby = _gridGetNearby(zoneId, m.x, m.y, _SPATIAL_BROADCAST_RADIUS);
+          for (var r = 0; r < nearby.length; r++) {
+            var rid = nearby[r];
+            if (rid === m.id) continue;
+            if (!perRecipient.has(rid)) perRecipient.set(rid, []);
+            perRecipient.get(rid).push(m);
+          }
+        }
+        for (var rEntry of perRecipient) {
+          _moveBatchIO.to(rEntry[0]).emit('batch_move', { moves: rEntry[1] });
+        }
+      } else {
+        // Small zones (towns, buildings): broadcast all moves to zone room
+        _moveBatchIO.to('zone:' + zoneId).emit('batch_move', { moves: moves });
+      }
     }
   }, 100);
 }
@@ -58,6 +108,7 @@ module.exports = {
     var playerLastFacing = new Map(); // socketId -> last broadcast facing
     var playerLastMoveTime = new Map(); // socketId -> timestamp of last accepted move
     var playerSpeedViolations = new Map(); // socketId -> count
+    var playerMountCache = new Map(); // socketId -> { mount, race, ts } (cached to avoid loadAccount every move)
     var MOVE_JITTER_SQ = 4; // ignore moves < 2px (reduces noise from floating point)
     var MAX_SPEED_PX_PER_S = 600; // max movement speed in pixels/sec (generous to allow mounts/races)
     var MAX_SPEED_VIOLATIONS = 10; // violations before kicking
@@ -68,47 +119,68 @@ module.exports = {
     _startMoveBatchTicker(io, state);
 
     // -----------------------------------------------------------------------
-    // Spatial grid: tracks players by chunk cell for O(1) neighborhood lookups
+    // Spatial grid: module-level, keyed by zoneId for cross-player lookups (MED-1)
     // -----------------------------------------------------------------------
-    var GRID_CELL_SIZE = CHUNK_SIZE;  // one cell per chunk
-    var spatialGrid = new Map();      // 'cx,cy' -> Set<socketId>
+    _GRID_CELL_SIZE = CHUNK_SIZE;  // sync module-level constant with runtime value
 
     function _gridKey(x, y) {
-      return Math.floor(x / GRID_CELL_SIZE) + ',' + Math.floor(y / GRID_CELL_SIZE);
+      return Math.floor(x / _GRID_CELL_SIZE) + ',' + Math.floor(y / _GRID_CELL_SIZE);
     }
 
-    function gridAdd(socketId, x, y) {
-      var key = _gridKey(x, y);
-      if (!spatialGrid.has(key)) spatialGrid.set(key, new Set());
-      spatialGrid.get(key).add(socketId);
-    }
-
-    function gridRemove(socketId, x, y) {
-      var key = _gridKey(x, y);
-      var cell = spatialGrid.get(key);
-      if (cell) {
-        cell.delete(socketId);
-        if (cell.size === 0) spatialGrid.delete(key);
+    function gridSet(zoneId, socketId, x, y) {
+      if (!_spatialGrids.has(zoneId)) _spatialGrids.set(zoneId, new Map());
+      var grid = _spatialGrids.get(zoneId);
+      // Remove from old cell if exists
+      var oldKey = _playerChunkMap.get(socketId);
+      if (oldKey) {
+        var oldCell = grid.get(oldKey);
+        if (oldCell) {
+          oldCell.delete(socketId);
+          if (oldCell.size === 0) grid.delete(oldKey);
+        }
       }
+      var key = _gridKey(x, y);
+      if (!grid.has(key)) grid.set(key, new Set());
+      grid.get(key).add(socketId);
+      _playerChunkMap.set(socketId, key);
+      _playerZoneMap.set(socketId, zoneId);
     }
 
-    function gridMove(socketId, oldX, oldY, newX, newY) {
+    function gridRemove(socketId) {
+      var zoneId = _playerZoneMap.get(socketId);
+      var key = _playerChunkMap.get(socketId);
+      if (zoneId && key) {
+        var grid = _spatialGrids.get(zoneId);
+        if (grid) {
+          var cell = grid.get(key);
+          if (cell) {
+            cell.delete(socketId);
+            if (cell.size === 0) grid.delete(key);
+          }
+        }
+      }
+      _playerChunkMap.delete(socketId);
+      _playerZoneMap.delete(socketId);
+    }
+
+    function gridMove(zoneId, socketId, oldX, oldY, newX, newY) {
       var oldKey = _gridKey(oldX, oldY);
       var newKey = _gridKey(newX, newY);
       if (oldKey !== newKey) {
-        gridRemove(socketId, oldX, oldY);
-        gridAdd(socketId, newX, newY);
+        gridSet(zoneId, socketId, newX, newY);
       }
     }
 
-    // Get all socketIds in cells within radiusChunks of (x, y)
-    function gridGetNearby(x, y, radiusChunks) {
-      var cx = Math.floor(x / GRID_CELL_SIZE);
-      var cy = Math.floor(y / GRID_CELL_SIZE);
+    // Get all socketIds in cells within radiusChunks of (x, y) for a given zone
+    function gridGetNearby(zoneId, x, y, radiusChunks) {
+      var grid = _spatialGrids.get(zoneId);
+      if (!grid) return [];
+      var cx = Math.floor(x / _GRID_CELL_SIZE);
+      var cy = Math.floor(y / _GRID_CELL_SIZE);
       var result = [];
       for (var dy = -radiusChunks; dy <= radiusChunks; dy++) {
         for (var dx = -radiusChunks; dx <= radiusChunks; dx++) {
-          var cell = spatialGrid.get((cx + dx) + ',' + (cy + dy));
+          var cell = grid.get((cx + dx) + ',' + (cy + dy));
           if (cell) {
             for (var sid of cell) result.push(sid);
           }
@@ -125,11 +197,27 @@ module.exports = {
       };
     }
 
+    var MAX_KNOWN_CHUNKS = 200;
+    var KNOWN_EVICT_RADIUS_SQ = 64; // evict chunks > 8 chunks away (8² = 64)
+
     function sendNearbyChunks(socket, zoneId, cx, cy) {
       var known = clientChunks.get(socket.id);
       if (!known) {
         known = new Set();
         clientChunks.set(socket.id, known);
+      }
+
+      // Evict server-known chunks far from current position (mirrors client LRU eviction)
+      if (known.size > MAX_KNOWN_CHUNKS) {
+        var toEvict = [];
+        for (var kk of known) {
+          var _p = kk.split(',');
+          var edx = parseInt(_p[0]) - cx, edy = parseInt(_p[1]) - cy;
+          if (edx * edx + edy * edy > KNOWN_EVICT_RADIUS_SQ) {
+            toEvict.push(kk);
+          }
+        }
+        for (var ei = 0; ei < toEvict.length; ei++) known.delete(toEvict[ei]);
       }
 
       // Phase 1: Inner ring (radius 1 = 3x3 = 9 chunks) — immediate
@@ -150,6 +238,7 @@ module.exports = {
         // Append nearby overworld structures so client can render markers
         if (zoneId === 'overworld') {
           payload.structures = overworldStructures.getStructuresNearChunk(cx, cy, 5);
+          payload.rifts = overworldRifts.getRiftsNearChunk(cx, cy, 8);
         }
         socket.emit('chunk_data', payload);
       }
@@ -249,8 +338,7 @@ module.exports = {
       var prevZone = state.playerZones.get(socket.id);
       if (prevZone) {
         // Remove from spatial grid before leaving
-        var prevPos = state.playerPositions.get(socket.id);
-        if (prevPos) gridRemove(socket.id, prevPos.x, prevPos.y);
+        gridRemove(socket.id);
 
         socket.leave('zone:' + prevZone);
         io.to('zone:' + prevZone).emit('player_left_zone', {
@@ -277,9 +365,8 @@ module.exports = {
 
       // For overworld/chunk-based zones, validate spawn position
       if (zone.chunkCache && state.worldgen) {
-        var accKey_spawn = socketAccountMap.get(socket.id);
-        var spawnAcc = accKey_spawn ? accounts.loadAccount(accKey_spawn) : null;
-        var spawnRace = spawnAcc ? spawnAcc.race : null;
+        // Race is permanent after character creation — use cached value on user object (CRIT-5)
+        var spawnRace = user.race || null;
         if ((spawnX === 0 && spawnY === 0) || !state.worldgen.isWalkable(spawnX, spawnY, spawnRace)) {
           var sp = state.worldgen.getSpawnPoint();
           spawnX = sp.x;
@@ -315,7 +402,7 @@ module.exports = {
         playerChunks.set(socket.id, spawnChunk.cx + ',' + spawnChunk.cy);
         clientChunks.delete(socket.id); // clear chunk cache on zone entry
         sendNearbyChunks(socket, zoneId, spawnChunk.cx, spawnChunk.cy);
-        gridAdd(socket.id, spawnX, spawnY);
+        gridSet(zoneId, socket.id, spawnX, spawnY);
 
         // Send lich corruption data for nearby chunks on zone entry
         if (deps.directorLich) {
@@ -337,6 +424,7 @@ module.exports = {
           });
         }
       }
+      var _joinAcc = accounts.loadAccount(socketAccountMap.get(socket.id));
       socket.to('zone:' + zoneId).emit('player_entered_zone', {
         id: socket.id,
         name: user.name,
@@ -348,7 +436,69 @@ module.exports = {
         y: pos ? pos.y : 0,
         facing: pos ? pos.facing : 'down',
         zoneId: zoneId,
+        race: user.race || (_joinAcc && _joinAcc.race) || null,
+        ascensionMark: _joinAcc ? !!_joinAcc.ascensionMark : false,
       });
+
+      // --- Biome weather emit on zone_enter ---
+      var _biome = (joinedZone && joinedZone.biome) || 'plains';
+      var _biomeW = state.getBiomeWeather(_biome);
+      var _wEffect = rpgData.getBiomeWeatherEffect(_biome, _biomeW);
+      socket.emit('biome_weather', { biome: _biome, weather: _biomeW, effects: _wEffect });
+
+      // --- Town rumors emit on zone_enter (for town zones) ---
+      if (joinedZone && (joinedZone.type === 'town' || joinedZone.isTown)) {
+        try {
+          var rumorSystem = require('../rumor-system');
+          var rumors = rumorSystem.getTownRumors(zoneId);
+          if (rumors.length > 0) {
+            socket.emit('town_rumors', { rumors: rumors });
+          }
+        } catch (_e) { /* rumor system not loaded yet */ }
+      }
+
+      // --- Town reputation + faction guard hostility on zone_enter ---
+      if (accKey) {
+        var _zoneAcc = accounts.loadAccount(accKey);
+        if (_zoneAcc) {
+          // Send town rep
+          var _townRep = (_zoneAcc.townReputation && _zoneAcc.townReputation[zoneId]) || 0;
+          var _townLabel = 'Neutral';
+          if (_townRep >= 80) _townLabel = 'Beloved';
+          else if (_townRep >= 50) _townLabel = 'Respected';
+          else if (_townRep >= 20) _townLabel = 'Friendly';
+          else if (_townRep >= -20) _townLabel = 'Neutral';
+          else if (_townRep >= -50) _townLabel = 'Unfriendly';
+          else if (_townRep >= -80) _townLabel = 'Hostile';
+          else _townLabel = 'Banished';
+          socket.emit('town_rep_update', { zoneId: zoneId, score: _townRep, label: _townLabel });
+
+          // Faction guard hostility check
+          try {
+            var factionsHandler = require('./factions');
+            var _factionId = factionsHandler.getFactionForZone(zoneId);
+            if (_factionId && factionsHandler.isFactionHostile(_zoneAcc.factionRep, _factionId)) {
+              socket.emit('guard_hostile', {
+                zoneId: zoneId,
+                faction: _factionId,
+                message: 'The guards eye you with open hostility. Town services may be denied.',
+              });
+            }
+          } catch (_e2) { /* factions handler not loaded yet */ }
+
+          // Karma guard hostility check
+          try {
+            var karmaHandler = require('./karma');
+            if (karmaHandler.isGuardHostile(_zoneAcc)) {
+              socket.emit('guard_hostile', {
+                zoneId: zoneId,
+                reason: 'karma',
+                message: 'Your dark reputation precedes you. The guards refuse to help.',
+              });
+            }
+          } catch (_e3) { /* karma handler not loaded yet */ }
+        }
+      }
     });
 
     // --- zone_move: player position update ---
@@ -374,7 +524,55 @@ module.exports = {
         var mdx = rx - oldPos.x;
         var mdy = ry - oldPos.y;
         var distSq = mdx * mdx + mdy * mdy;
-        var maxDist = MAX_SPEED_PX_PER_S * (elapsed / 1000);
+
+        // Apply mount speed multiplier (cached per player, refreshed every 5s)
+        var mountMult = 1.0;
+        var _mc = playerMountCache.get(socket.id);
+        if (!_mc || now - _mc.ts > 5000) {
+          var _mcKey = socketAccountMap.get(socket.id);
+          if (_mcKey) {
+            var _mcAcc = accounts.loadAccount(_mcKey);
+            // Race is permanent — use cached value on user object (CRIT-5)
+            _mc = { mount: _mcAcc ? _mcAcc.mount : null, race: user.race || null, ts: now };
+          } else {
+            _mc = { mount: null, race: user.race || null, ts: now };
+          }
+          playerMountCache.set(socket.id, _mc);
+        }
+        if (_mc.mount && state.worldgen && state.worldgen.MOUNT_SPEEDS) {
+          mountMult = state.worldgen.MOUNT_SPEEDS[_mc.mount] || 1.0;
+          // Apply Orc racial mount speed bonus
+          if (_mc.race === 'orc' && mountMult > 1.0) {
+            mountMult *= 1.10;
+          }
+        }
+
+        // Apply pet speed bonus (from active pet)
+        var petSpeedMult = 1.0;
+        if (_mc && !_mc._petChecked) {
+          var _petKey = socketAccountMap.get(socket.id);
+          if (_petKey) {
+            var _petAcc = accounts.loadAccount(_petKey);
+            if (_petAcc && _petAcc.activePet && _petAcc.petData) {
+              for (var _pi = 0; _pi < _petAcc.petData.length; _pi++) {
+                if (_petAcc.petData[_pi].id === _petAcc.activePet) {
+                  petSpeedMult = petsHandler.calculatePetSpeed(_petAcc.petData[_pi]);
+                  break;
+                }
+              }
+            }
+            // Ascension speed bonus
+            if (_petAcc && _petAcc.ascensionTree && _petAcc.ascensionTree['seasoned_traveler']) {
+              petSpeedMult *= (1 + _petAcc.ascensionTree['seasoned_traveler'] * 0.03);
+            }
+          }
+          _mc._petChecked = true;
+          _mc._petSpeed = petSpeedMult;
+        } else if (_mc && _mc._petSpeed) {
+          petSpeedMult = _mc._petSpeed;
+        }
+
+        var maxDist = MAX_SPEED_PX_PER_S * mountMult * petSpeedMult * (elapsed / 1000);
         var maxDistSq = maxDist * maxDist;
 
         if (distSq > maxDistSq && distSq > 10000) {
@@ -399,6 +597,19 @@ module.exports = {
         playerLastMoveTime.set(socket.id, now);
       } else {
         playerLastMoveTime.set(socket.id, Date.now());
+      }
+
+      // --- Encumbrance check ---
+      var _encKey = socketAccountMap.get(socket.id);
+      if (_encKey) {
+        var _encAcc = accounts.loadAccount(_encKey);
+        if (_encAcc) {
+          var _encLevel = accounts.getEncumbranceLevel(_encAcc);
+          if (_encLevel === 'overloaded') {
+            socket.emit('zone_error', { message: 'You are too encumbered to move.' });
+            return;
+          }
+        }
       }
 
       // Jitter filter: check if position actually changed meaningfully
@@ -476,11 +687,11 @@ module.exports = {
             challengesHandler.trackAchievementProgress(accounts, exploreAccKey, 'explore_chunk', 1, socket);
           }
         }
-        // Update spatial grid
+        // Update spatial grid (module-level, keyed by zoneId)
         if (oldPos) {
-          gridMove(socket.id, oldPos.x, oldPos.y, rx, ry);
+          gridMove(zoneId, socket.id, oldPos.x, oldPos.y, rx, ry);
         } else {
-          gridAdd(socket.id, rx, ry);
+          gridSet(zoneId, socket.id, rx, ry);
         }
       }
 
@@ -503,6 +714,7 @@ module.exports = {
 
     // --- zone_chat: proximity-based chat within a zone ---
     socket.on('zone_chat', function(data) {
+      if (!checkEventRate(socket, 'zone_chat', 10, 5000)) return;
       if (!data || typeof data.message !== 'string') return;
 
       var zoneId = state.playerZones.get(socket.id);
@@ -536,7 +748,7 @@ module.exports = {
         var senderPos = state.playerPositions.get(socket.id);
         if (!senderPos) return;
         var chatRadiusChunks = (chatType === 'shout') ? SHOUT_RADIUS_CHUNKS : CHAT_RADIUS_CHUNKS;
-        var nearbyChatPlayers = gridGetNearby(senderPos.x, senderPos.y, chatRadiusChunks);
+        var nearbyChatPlayers = gridGetNearby(zoneId, senderPos.x, senderPos.y, chatRadiusChunks);
         for (var ci = 0; ci < nearbyChatPlayers.length; ci++) {
           io.to(nearbyChatPlayers[ci]).emit('zone_message', msg);
         }
@@ -591,11 +803,14 @@ module.exports = {
         return;
       }
 
-      // Check skill level
+      // Check skill level — load account ONCE for entire handler (CRIT-2)
       var accKey = socketAccountMap.get(socket.id);
       if (!accKey) return;
-      var skill = accounts.getSkill(accKey, resource.skill);
-      if (!skill || skill.level < resource.minLevel) {
+      var account = accounts.loadAccount(accKey);
+      if (!account) return;
+      if (!account.skills) account.skills = {};
+      var skill = account.skills[resource.skill] || { level: 1, xp: 0 };
+      if (skill.level < resource.minLevel) {
         socket.emit('harvest_error', {
           message: 'Requires ' + resource.skill.charAt(0).toUpperCase() + resource.skill.slice(1) + ' Lv.' + resource.minLevel,
         });
@@ -615,9 +830,46 @@ module.exports = {
         }
       }
 
-      // Award XP (apply server rules xpRate if set)
+      // Day/night gathering XP bonuses
+      var _timeOfDay = (state.world && state.world.timeOfDay) || 'day';
+      var _gatherSkill = resource.skill;
+      if (_timeOfDay === 'day') {
+        if (_gatherSkill === 'farming' || _gatherSkill === 'woodcutting') harvestXpAmount = Math.round(harvestXpAmount * 1.10);
+        if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 0.90);
+      } else if (_timeOfDay === 'night') {
+        if (_gatherSkill === 'mining') harvestXpAmount = Math.round(harvestXpAmount * 1.15);
+        if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 1.10);
+        if (_gatherSkill === 'farming' || _gatherSkill === 'woodcutting') harvestXpAmount = Math.round(harvestXpAmount * 0.90);
+      } else if (_timeOfDay === 'dawn') {
+        if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 1.15);
+      } else if (_timeOfDay === 'dusk') {
+        if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 1.20);
+      }
+
+      // Weather gathering XP bonuses
+      var _weather = (state.world && state.world.weather) || 'clear';
+      if (_weather === 'rain') {
+        if (_gatherSkill === 'farming') harvestXpAmount = Math.round(harvestXpAmount * 1.15);
+        if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 1.10);
+        if (_gatherSkill === 'woodcutting') harvestXpAmount = Math.round(harvestXpAmount * 0.90);
+      } else if (_weather === 'storm') {
+        harvestXpAmount = Math.round(harvestXpAmount * 0.80); // -20% all gathering
+        if (_gatherSkill === 'mining') harvestXpAmount = Math.round(harvestXpAmount * 1.25); // net +0% mining (0.8*1.25=1.0) then +25% on top
+      } else if (_weather === 'fog') {
+        if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 1.20);
+        if (_gatherSkill === 'woodcutting') harvestXpAmount = Math.round(harvestXpAmount * 0.85);
+      } else if (_weather === 'snow') {
+        if (_gatherSkill === 'farming') harvestXpAmount = Math.round(harvestXpAmount * 0.85);
+        if (_gatherSkill === 'mining') harvestXpAmount = Math.round(harvestXpAmount * 1.10);
+        if (_gatherSkill === 'fishing') harvestXpAmount = Math.round(harvestXpAmount * 0.90);
+      }
+
+      // Award XP — pass pre-loaded account to avoid redundant loadAccount (CRIT-2)
       var xpRate = (deps.serverRules && deps.serverRules.xpRate) ? deps.serverRules.xpRate : undefined;
-      var xpResult = accounts.addSkillXp(accKey, resource.skill, harvestXpAmount, xpRate);
+      var xpResult = accounts.addSkillXp(accKey, resource.skill, harvestXpAmount, xpRate, account);
+
+      // Card Evolution XP: gathering category on harvest
+      accounts.gainArchetypeCategoryXp(accKey, 'gathering', 5);
 
       // --- Phantom Skill XP: Herbalism, Foraging, Survival ---
       var _herbTypes = { herbs: true, mushroom: true, vegetables: true };
@@ -626,7 +878,7 @@ module.exports = {
 
       // Herbalism: award XP when harvesting herb-like resources
       if (_herbTypes[resource.type]) {
-        accounts.addSkillXp(accKey, 'herbalism', Math.round(harvestXpAmount * 0.8), xpRate);
+        accounts.addSkillXp(accKey, 'herbalism', Math.round(harvestXpAmount * 0.8), xpRate, account);
       }
 
       // Foraging: award XP when harvesting non-mining/non-woodcutting resources in forest/swamp biomes
@@ -636,7 +888,7 @@ module.exports = {
           _playerBiomeForage = state.worldgen.getBiomeAtPixel(pos.x, pos.y);
         }
         if (_playerBiomeForage !== null && _forageBiomes[_playerBiomeForage]) {
-          accounts.addSkillXp(accKey, 'foraging', Math.round(harvestXpAmount * 0.6), xpRate);
+          accounts.addSkillXp(accKey, 'foraging', Math.round(harvestXpAmount * 0.6), xpRate, account);
         }
       }
 
@@ -652,7 +904,7 @@ module.exports = {
       }
       if (!_playerVisited.has(_chunkKey)) {
         _playerVisited.add(_chunkKey);
-        accounts.addSkillXp(accKey, 'survival', 5, xpRate);
+        accounts.addSkillXp(accKey, 'survival', 5, xpRate, account);
       }
 
       // Determine resource type and add to inventory
@@ -681,9 +933,10 @@ module.exports = {
         mithril_pickaxe:   { yield: 4, xpMult: 1.25 },
       };
       var harvestAmount = 1;
-      var equipment = accounts.getEquipment ? accounts.getEquipment(accKey) : null;
+      // Use pre-loaded account for equipment and inventory (CRIT-2)
+      var equipment = account.equipment || null;
       if (equipment) {
-        var inv = accounts.getMMOInventory ? accounts.getMMOInventory(accKey) : null;
+        var inv = account.mmoInventory || null;
         if (inv && inv.items) {
           if (resource.skill === 'woodcutting' && equipment.axe) {
             var axeItem = inv.items.find(function(it) { return it.id === equipment.axe; });
@@ -708,8 +961,8 @@ module.exports = {
         }
       }
 
-      // Apply equipped card effects to gathering
-      var cardEffects = accounts.getEquippedCardEffects ? accounts.getEquippedCardEffects(accKey) : [];
+      // Apply equipped card effects to gathering — pass pre-loaded account (CRIT-2)
+      var cardEffects = accounts.getEquippedCardEffects ? accounts.getEquippedCardEffects(accKey, account) : [];
       var gatherBonus = 0;
       var doubleGatherChance = 0;
       var cropYieldBonus = 0;
@@ -836,18 +1089,17 @@ module.exports = {
       }
 
       // --- Tool durability loss: 0.2% per harvest for axes/pickaxes ---
+      // Uses pre-loaded account and cardEffects from above (CRIT-2)
       var harvestDurWarnings = [];
       try {
         if (resource.skill === 'woodcutting' || resource.skill === 'mining') {
           var durToolSlot = (resource.skill === 'woodcutting') ? 'axe' : 'pickaxe';
-          var durToolAcc = accounts.loadAccount(accKey);
-          if (durToolAcc && durToolAcc.equipment && durToolAcc.equipment[durToolSlot]) {
-            var toolCardEffects = accounts.getEquippedCardEffects ? accounts.getEquippedCardEffects(accKey) : [];
-            var toolDurResult = accounts.reduceDurability(durToolAcc, durToolSlot, 0.002, toolCardEffects);
+          if (account.equipment && account.equipment[durToolSlot]) {
+            var toolDurResult = accounts.reduceDurability(account, durToolSlot, 0.002, cardEffects);
             if (toolDurResult) {
               harvestDurWarnings.push(toolDurResult);
             }
-            accounts.saveAccount(durToolAcc);
+            accounts.saveAccount(account);
           }
         }
       } catch (harvestDurErr) {
@@ -884,6 +1136,14 @@ module.exports = {
         }
       }
 
+      // Fire glossary trigger for first harvest
+      try {
+        var harvestTerms = knowledgeHandler.fireGlossaryTrigger(accounts, accKey, 'first_harvest');
+        for (var hti = 0; hti < harvestTerms.length; hti++) {
+          socket.emit('knowledge_term_unlocked', harvestTerms[hti]);
+        }
+      } catch (e) { /* glossary trigger non-fatal */ }
+
       // --- Track daily challenge & achievement progress for harvesting ---
       challengesHandler.trackChallengeProgress(accounts, accKey, 'harvest', harvestAmount);
       // Track specific resource types for targeted challenges
@@ -894,6 +1154,29 @@ module.exports = {
       } else if (resource.skill === 'fishing') {
         challengesHandler.trackChallengeProgress(accounts, accKey, 'fish', harvestAmount);
       }
+
+      // --- Quest progress: gather-type quests ---
+      try {
+        var qAcc = accounts.loadAccount(accKey);
+        if (qAcc && qAcc.questProgress && qAcc.questProgress.active) {
+          var qChanged = false;
+          for (var qi = 0; qi < qAcc.questProgress.active.length; qi++) {
+            var quest = qAcc.questProgress.active[qi];
+            var rpgData = require('../rpg-data');
+            var tmpl = rpgData.WORLD_QUEST_TEMPLATES ? rpgData.WORLD_QUEST_TEMPLATES.find(function(t) { return t.questId === quest.questId; }) : null;
+            if (tmpl && tmpl.type === 'gather' && tmpl.target.resource === resource.type) {
+              quest.progress = Math.min(quest.progress + harvestAmount, quest.targetCount);
+              qChanged = true;
+              if (quest.progress >= quest.targetCount) {
+                socket.emit('quest_progress', { questId: quest.questId, progress: quest.progress, targetCount: quest.targetCount, complete: true });
+              } else {
+                socket.emit('quest_progress', { questId: quest.questId, progress: quest.progress, targetCount: quest.targetCount, complete: false });
+              }
+            }
+          }
+          if (qChanged) accounts.saveAccount(qAcc);
+        }
+      } catch (qErr) { /* quest progress error is non-fatal */ }
     });
 
     // --- get_inventory: player requests their MMO inventory ---
@@ -907,6 +1190,7 @@ module.exports = {
 
     // --- request_chunks: client explicitly requests chunk data for given coords ---
     socket.on('request_chunks', function(data) {
+      if (!checkEventRate(socket, 'request_chunks', 20, 5000)) return;
       if (!data || typeof data.cx !== 'number' || typeof data.cy !== 'number') return;
 
       var zoneId = state.playerZones.get(socket.id);
@@ -914,6 +1198,17 @@ module.exports = {
 
       var zone = state.zones.get(zoneId);
       if (!zone || !zone.chunkCache) return;
+
+      // Proximity validation: only allow chunk requests within reasonable range of player
+      var pos = state.playerPositions.get(socket.id);
+      if (pos) {
+        var playerCx = Math.floor(pos.x / CHUNK_SIZE);
+        var playerCy = Math.floor(pos.y / CHUNK_SIZE);
+        var reqCx = Math.floor(data.cx);
+        var reqCy = Math.floor(data.cy);
+        var cdx = reqCx - playerCx, cdy = reqCy - playerCy;
+        if (cdx * cdx + cdy * cdy > 25) return; // max 5 chunks away
+      }
 
       sendNearbyChunks(socket, zoneId, Math.floor(data.cx), Math.floor(data.cy));
     });
@@ -990,7 +1285,7 @@ module.exports = {
       var destY = data.worldY;
 
       // Leave current zone + remove from spatial grid
-      if (pos) gridRemove(socket.id, pos.x, pos.y);
+      gridRemove(socket.id);
       socket.leave('zone:' + currentZoneId);
       io.to('zone:' + currentZoneId).emit('player_left_zone', {
         playerId: socket.id,
@@ -1273,7 +1568,8 @@ module.exports = {
 
       // Send updated corruption to nearby players
       var updatedCorruption = deps.directorLich.getCorruptionForArea(cx, cy, 5);
-      var nearbySockets = gridGetNearby(pos.x, pos.y, 5);
+      var cleanseZoneId = state.playerZones.get(socket.id);
+      var nearbySockets = cleanseZoneId ? gridGetNearby(cleanseZoneId, pos.x, pos.y, 5) : [];
       for (var ni = 0; ni < nearbySockets.length; ni++) {
         io.to(nearbySockets[ni]).emit('corruption_update', { chunks: updatedCorruption });
       }
@@ -1421,7 +1717,8 @@ module.exports = {
 
       // Send updated corruption to nearby players
       var updatedCorruption = deps.directorLich.getCorruptionForArea(cx, cy, Math.max(5, cardRadius + 2));
-      var nearbySockets = gridGetNearby(pos.x, pos.y, Math.max(5, cardRadius + 2));
+      var cardCleanseZoneId = state.playerZones.get(socket.id);
+      var nearbySockets = cardCleanseZoneId ? gridGetNearby(cardCleanseZoneId, pos.x, pos.y, Math.max(5, cardRadius + 2)) : [];
       for (var ni = 0; ni < nearbySockets.length; ni++) {
         io.to(nearbySockets[ni]).emit('corruption_update', { chunks: updatedCorruption });
       }
@@ -1467,6 +1764,45 @@ module.exports = {
       });
     });
 
+    // --- npc_interact: player talks to/interacts with an NPC ---
+    // NOTE: overworld.js also registers npc_interact for dialogue tree handling.
+    // This handler only updates relationship/reputation IF the NPC exists in the zone.
+    socket.on('npc_interact', function(data) {
+      if (!data || typeof data.npcId !== 'string') return;
+      var key = socketAccountMap.get(socket.id);
+      if (!key) return;
+      var account = accounts.loadAccount(key);
+      if (!account) return;
+      var currentZoneId = state.playerZones.get(socket.id);
+      if (!currentZoneId) return;
+
+      // Validate NPC actually exists in this zone
+      var zone = state.zones.get(currentZoneId);
+      if (!zone) return;
+      var npcExists = false;
+      if (zone.npcs) {
+        for (var ni = 0; ni < zone.npcs.length; ni++) {
+          if (zone.npcs[ni].id === data.npcId) { npcExists = true; break; }
+        }
+      }
+      if (!npcExists) return;
+
+      // Increment NPC relationship
+      if (!account.npcRelationships) account.npcRelationships = {};
+      var currentNpcRep = account.npcRelationships[data.npcId] || 0;
+      account.npcRelationships[data.npcId] = Math.min(100, currentNpcRep + 1);
+      // Increment town reputation
+      if (!account.townReputation) account.townReputation = {};
+      var currentTownRep = account.townReputation[currentZoneId] || 0;
+      account.townReputation[currentZoneId] = Math.min(100, currentTownRep + 0.5);
+      accounts.saveAccount(account);
+      socket.emit('npc_interact_result', {
+        npcId: data.npcId,
+        npcRelationship: account.npcRelationships[data.npcId],
+        townReputation: account.townReputation[currentZoneId],
+      });
+    });
+
     // Clean up cooldowns and chunk tracking on disconnect
     socket.on('disconnect', function() {
       // Save final position to account
@@ -1489,7 +1825,12 @@ module.exports = {
       playerLastFacing.delete(socket.id);
       playerLastMoveTime.delete(socket.id);
       playerSpeedViolations.delete(socket.id);
-      if (pos) gridRemove(socket.id, pos.x, pos.y);
+      playerMountCache.delete(socket.id);
+      // Clean up survival visited chunks to prevent memory leak (BUG-1)
+      if (accKey && state._survivalVisitedChunks) {
+        state._survivalVisitedChunks.delete(accKey);
+      }
+      gridRemove(socket.id);
       _moveBatch.delete(socket.id);
     });
   }

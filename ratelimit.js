@@ -261,6 +261,29 @@ function getIp(source) {
 }
 
 /**
+ * Return the current event count for a key within the window, without
+ * consuming a slot or recording any violations. Safe to call freely.
+ * @param {string} key - IP or socket ID
+ * @param {string} event - Event/action name
+ * @param {number} windowMs - Time window in ms
+ * @returns {number} Number of events recorded within the window
+ */
+function peekCount(key, event, windowMs) {
+  const entry = ipStore.get(key);
+  if (!entry) return 0;
+  const timestamps = entry.events.get(event);
+  if (!timestamps || timestamps.length === 0) return 0;
+  const cutoff = Date.now() - windowMs;
+  let count = 0;
+  // Timestamps are in ascending order; count from the end
+  for (let i = timestamps.length - 1; i >= 0; i--) {
+    if (timestamps[i] > cutoff) count++;
+    else break;
+  }
+  return count;
+}
+
+/**
  * How many IPs are currently tracked (for monitoring).
  */
 function size() {
@@ -285,6 +308,7 @@ function decrementConnections() {
 
 module.exports = {
   check,
+  peekCount,
   getIp,
   size,
   IP_TTL_MS,

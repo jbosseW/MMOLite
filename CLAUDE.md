@@ -134,7 +134,7 @@ All socket handlers export `{ init(io, socket, deps) }` and are registered in `s
 | `plot.js` | claim_plot, unclaim_plot (two-step confirm) | Land claiming with plot persistence |
 | `portal.js` | portal_list, portal_travel, portal_craft, portal_destroy | Town-to-town teleportation + personal portals |
 | `dungeon.js` | dungeon_enter/exit/move/descend/ascend/attack/open_chest/harvest/interact_npc/camp_place/camp_action/guild_signup/quest_list/quest_complete/leaderboard | Two-type dungeon system: Rift (infinite, daily-seeded) + Overworld caves (finite, location-seeded) |
-| `battle.js` | Combat (placeholder) | Future combat system |
+| `battle.js` | Combat (legacy placeholder) | See dungeon-combat.js for active tactical combat |
 | `party.js` | Party formation | Group play |
 | `monsters.js` | Monster spawning | Future PvE |
 
@@ -260,8 +260,8 @@ Same rarity + same rarity = next rarity tier. Max 2 fusions per lineage. Effects
 WASD: Move | Enter: Chat | E: Interact | I: Inventory | C: Character Sheet | K: Card Collection | M: Map | P: Claim Plot
 
 ### XP System
-- Skill XP: `xpForLevel(n) = 100 * n`, max level 99
-- Overall XP: `overallXpForLevel(n) = 250 * n`, max level 100
+- Skill XP: `xpForLevel(n) = floor(80 * n^1.7)` (~401 at lv10, ~56k at lv50), no max level cap
+- Overall XP: `overallXpForLevel(n) = floor(200 * n^1.6)`, no max level cap
 - 10% of all skill XP spills over to overall level
 - Level-ups grant: card pack (always), stat point (every 3 levels), card slot unlock (levels 10/20/30/40)
 
@@ -321,7 +321,7 @@ Two dungeon types sharing the same generation and combat code:
 ---
 
 ## What's NOT Yet Implemented (Future Work)
-- **Combat system:** Melee/magic skills exist as placeholders, no actual PvE/PvP combat yet (dungeon combat is functional but basic)
+- **Combat system:** Tactical turn-based combat is fully functional for PvE (dungeon + overworld). PvP combat not yet implemented.
 - **Quest system:** `questProgress` field exists on accounts but no quest content (dungeon daily quests generate but progress tracking not wired)
 - **Guild persistence:** Guilds are runtime-only (lost on server restart), need disk persistence
 - **Full "chips to coins" rename:** New code uses "coins" in user-facing strings but the underlying field is still `account.chips`
@@ -330,5 +330,7 @@ Two dungeon types sharing the same generation and combat code:
 - **Client auction/shop UI:** Server handlers exist but client UI for auction house and NPC shops not yet built in game.lua
 - **Dungeon skill benefits:** dungeon_dwelling/delving skills defined but effects not wired into gameplay
 - **Player revive system:** Death teleports to town; corpse/revive/guild-revive not yet implemented
-- **Card pack on boss kill:** Data supports it but not wired in handler
 - **Enemy AI patrol ticking:** Chase-on-player-move works, timer-based patrol wandering not implemented
+- **Evo-linked card affixes:** 5 evo_linked affixes defined (evo_xp_bonus, fusion_value_bonus, etc.) but not yet checked during card evolution/fusion
+- **Ascension rift_veteran:** Node defined but Rift start-floor skip not yet implemented
+- **Ascension eternal_mark:** Cosmetic glow — client-side rendering not yet added

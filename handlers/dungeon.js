@@ -12,10 +12,16 @@ var dungeonCombat = require('../dungeon-combat');
 var dungeonVision = require('../dungeon-vision');
 var worldgen = require('../worldgen');
 var overworldStructures = require('../overworld-structures');
+var overworldRifts = require('../overworld-rifts');
 var challengesHandler = require('./challenges');
 var knowledgeHandler = require('./knowledge');
 var loreBooks = require('../lore-books');
 var lootGen = require('../loot-generator');
+var karma = require('./karma');
+var prison = require('./prison');
+var companions = require('./companions');
+var petsHandler = require('./pets');
+var factions = require('./factions');
 
 var TILE = dungeonData.TILE;
 var CAMP_CONFIG = dungeonData.CAMP_CONFIG;
@@ -57,6 +63,7 @@ WALKABLE_TILES[TILE.CAMP_SPOT]   = true;
 WALKABLE_TILES[TILE.SHRINE]      = true;
 WALKABLE_TILES[TILE.BOSS_DOOR]   = true;
 WALKABLE_TILES[TILE.SHORTCUT]    = true;
+WALKABLE_TILES[TILE.CORPSE]      = true;
 
 // Share walkable tiles with AI engine and vision module
 dungeonAI.setWalkableTiles(WALKABLE_TILES);
@@ -82,8 +89,8 @@ var playerDungeons = new Map();   // socketId -> { dungeonId, floorNum }
 
 var leaderboard = { deepestFloor: [], mostKills: [], fastestBoss: [] };
 
-// LRU tracking for empty-floor eviction
-var floorAccessOrder = [];        // array of { key, map } for LRU eviction
+// LRU tracking for empty-floor eviction (Map preserves insertion order for O(1) LRU)
+var floorAccessOrder = new Map();  // zoneId -> { map, mapKey }
 var MAX_EMPTY_FLOORS = 50;
 var MAX_FLOOR_PLAYERS = 16;  // Max players per dungeon floor (4 parties of 4)
 
@@ -181,6 +188,32 @@ function _buildPackedVisibleSet(stringSet) {
   return packed;
 }
 
+// ---------------------------------------------------------------------------
+// Enemy-by-ID index: O(1) lookup Map built lazily on first access per floor.
+// Callers that add enemies to floor.enemies must also call indexNewEnemy().
+// ---------------------------------------------------------------------------
+function ensureEnemyIndex(floor) {
+  if (!floor.enemyById) {
+    floor.enemyById = new Map();
+    for (var i = 0; i < floor.enemies.length; i++) {
+      floor.enemyById.set(floor.enemies[i].id, floor.enemies[i]);
+    }
+  }
+  return floor.enemyById;
+}
+
+function indexNewEnemy(floor, enemy) {
+  if (floor.enemyById) {
+    floor.enemyById.set(enemy.id, enemy);
+  }
+}
+
+function removeEnemyFromIndex(floor, enemyId) {
+  if (floor.enemyById) {
+    floor.enemyById.delete(enemyId);
+  }
+}
+
 function processAIResults(zoneId, results) {
   if (!_io) return;
 
@@ -230,17 +263,17 @@ function processAIResults(zoneId, results) {
             });
             return;
           }
-          // Check if any enemy at attacker position is visible
+          // Check if the healer enemy position is visible (O(1) Map lookup)
           var floor = floorRefs.get(zoneId);
           if (floor) {
-            for (var ehi = 0; ehi < floor.enemies.length; ehi++) {
-              var eh = floor.enemies[ehi];
+            var healIdx = ensureEnemyIndex(floor);
+            var eh = healIdx.get(attack.attackerId);
+            if (eh) {
               if (!pd._packedVisibleSet) pd._packedVisibleSet = _buildPackedVisibleSet(pd.lastVisibleSet);
-              if (eh.id === attack.attackerId && pd._packedVisibleSet.has(_packCoord(eh.x, eh.y))) {
+              if (pd._packedVisibleSet.has(_packCoord(eh.x, eh.y))) {
                 _io.to(sid).emit('dungeon_enemy_heal', {
                   attackerName: attack.attackerName, healAmount: attack.healAmount, abilityName: attack.abilityName,
                 });
-                break;
               }
             }
           }
@@ -268,13 +301,10 @@ function processAIResults(zoneId, results) {
         windUp: attack.windUp,
       });
 
-      // Inject combat noise event
+      // Inject combat noise event (O(1) Map lookup)
       var attackFloor = floorRefs.get(zoneId);
       if (attackFloor) {
-        var attackerEnemy = null;
-        for (var aei = 0; aei < attackFloor.enemies.length; aei++) {
-          if (attackFloor.enemies[aei].id === attack.attackerId) { attackerEnemy = attackFloor.enemies[aei]; break; }
-        }
+        var attackerEnemy = ensureEnemyIndex(attackFloor).get(attack.attackerId) || null;
         if (attackerEnemy) {
           addNoiseEvent(attackFloor, 'combat', attackerEnemy.x, attackerEnemy.y, 0);
         }
@@ -290,13 +320,10 @@ function processAIResults(zoneId, results) {
       if (attack.damage > 0 && !attack.dodged && !attack.blocked && attack.attackerId) {
         var vampFloor = floorRefs.get(zoneId);
         if (vampFloor) {
-          for (var vi = 0; vi < vampFloor.enemies.length; vi++) {
-            var vampE = vampFloor.enemies[vi];
-            if (vampE.id === attack.attackerId && vampE.alive !== false && vampE.vampiricHealPercent > 0) {
-              var vampHeal = Math.max(1, Math.floor(attack.damage * vampE.vampiricHealPercent));
-              vampE.hp = Math.min(vampE.maxHp || vampE.hp, vampE.hp + vampHeal);
-              break;
-            }
+          var vampE = ensureEnemyIndex(vampFloor).get(attack.attackerId) || null;
+          if (vampE && vampE.alive !== false && vampE.vampiricHealPercent > 0) {
+            var vampHeal = Math.max(1, Math.floor(attack.damage * vampE.vampiricHealPercent));
+            vampE.hp = Math.min(vampE.maxHp || vampE.hp, vampE.hp + vampHeal);
           }
         }
       }
@@ -339,15 +366,14 @@ function processAIResults(zoneId, results) {
           _io.to(sid).emit('dungeon_enemy_attack_visual', atkVisualData);
           return;
         }
-        // Check if attacker enemy position is visible to this player
+        // Check if attacker enemy position is visible to this player (O(1) Map lookup)
         var atkFloor = floorRefs.get(zoneId);
         if (atkFloor) {
-          for (var avei = 0; avei < atkFloor.enemies.length; avei++) {
-            var ave = atkFloor.enemies[avei];
+          var ave = ensureEnemyIndex(atkFloor).get(attack.attackerId);
+          if (ave) {
             if (!pd._packedVisibleSet) pd._packedVisibleSet = _buildPackedVisibleSet(pd.lastVisibleSet);
-            if (ave.id === attack.attackerId && pd._packedVisibleSet.has(_packCoord(ave.x, ave.y))) {
+            if (pd._packedVisibleSet.has(_packCoord(ave.x, ave.y))) {
               _io.to(sid).emit('dungeon_enemy_attack_visual', atkVisualData);
-              break;
             }
           }
         }
@@ -368,6 +394,11 @@ function processAIResults(zoneId, results) {
   // Process enemy deaths from status effects — per-player filtered
   for (var di = 0; di < results.deaths.length; di++) {
     var death = results.deaths[di];
+    // Remove dead enemy from the fast-lookup index
+    if (death.enemy && death.enemy.id) {
+      var deathFloor = floorRefs.get(zoneId);
+      if (deathFloor) removeEnemyFromIndex(deathFloor, death.enemy.id);
+    }
     var deathData = { enemyIndex: death.enemyIndex, enemyId: death.enemy ? death.enemy.id : null, enemyX: death.enemy ? death.enemy.x : null, enemyY: death.enemy ? death.enemy.y : null, alive: false, hp: 0 };
     if (pMap) {
       var deadEnemy = death.enemy;
@@ -400,26 +431,29 @@ function startFloorAI(zoneId, floor) {
   var tickRate = dungeonAI.getFloorTickRate(floor, playerArr);
   if (tickRate <= 0) return; // no players, no ticking
 
-  // Apply floor modifier effects to enemies
-  var mod = floor.floorModifier || {};
-  if (mod.id === 'silent_floor') {
-    // Enemies can't hear, detection based on sight only
-    for (var i = 0; i < floor.enemies.length; i++) {
-      if (floor.enemies[i].alive !== false) {
-        floor.enemies[i].detectionRadius = Math.max(2, (floor.enemies[i].detectionRadius || 4) - 2);
+  // Apply floor modifier effects to enemies (guarded: only once per floor)
+  if (!floor._aiModifiersApplied) {
+    floor._aiModifiersApplied = true;
+    var mod = floor.floorModifier || {};
+    if (mod.id === 'silent_floor') {
+      // Enemies can't hear, detection based on sight only
+      for (var i = 0; i < floor.enemies.length; i++) {
+        if (floor.enemies[i].alive !== false) {
+          floor.enemies[i].detectionRadius = Math.max(2, (floor.enemies[i].detectionRadius || 4) - 2);
+        }
       }
-    }
-  } else if (mod.id === 'dense_fog') {
-    for (var j = 0; j < floor.enemies.length; j++) {
-      if (floor.enemies[j].alive !== false) {
-        floor.enemies[j].detectionRadius = Math.max(2, Math.floor((floor.enemies[j].detectionRadius || 4) * 0.6));
+    } else if (mod.id === 'dense_fog') {
+      for (var j = 0; j < floor.enemies.length; j++) {
+        if (floor.enemies[j].alive !== false) {
+          floor.enemies[j].detectionRadius = Math.max(2, Math.floor((floor.enemies[j].detectionRadius || 4) * 0.6));
+        }
       }
-    }
-  } else if (mod.id === 'blood_moon') {
-    for (var k = 0; k < floor.enemies.length; k++) {
-      if (floor.enemies[k].alive !== false) {
-        floor.enemies[k].detectionRadius = (floor.enemies[k].detectionRadius || 4) + 2;
-        floor.enemies[k].atk = Math.floor((floor.enemies[k].atk || 10) * 1.2);
+    } else if (mod.id === 'blood_moon') {
+      for (var k = 0; k < floor.enemies.length; k++) {
+        if (floor.enemies[k].alive !== false) {
+          floor.enemies[k].detectionRadius = (floor.enemies[k].detectionRadius || 4) + 2;
+          floor.enemies[k].atk = Math.floor((floor.enemies[k].atk || 10) * 1.2);
+        }
       }
     }
   }
@@ -581,6 +615,18 @@ function startFloorAI(zoneId, floor) {
   // Unstable rift: periodic wall shifting
   var riftMod = floor.floorModifier || {};
   if (riftMod.id === 'unstable_rift' && !wallShiftIntervals.has(zoneId)) {
+    // Pre-compute mutable tiles (WALL or FLOOR, interior only — skip border)
+    if (!floor.mutableTiles) {
+      floor.mutableTiles = [];
+      for (var mty = 1; mty < floor.height - 1; mty++) {
+        for (var mtx = 1; mtx < floor.width - 1; mtx++) {
+          var mtt = floor.grid[mty][mtx];
+          if (mtt === TILE.WALL || mtt === TILE.FLOOR) {
+            floor.mutableTiles.push({ x: mtx, y: mty });
+          }
+        }
+      }
+    }
     var shiftMs = (riftMod.wallShiftInterval || 60) * 1000;
     var collapseChance = riftMod.collapseChance || 0.05;
     var wsIntervalId = setInterval(function() {
@@ -588,39 +634,47 @@ function startFloorAI(zoneId, floor) {
       var pArr = getFloorPlayersArray(zoneId);
       if (pArr.length === 0) return;
 
-      // Collect mutable wall/floor positions (skip stairs, chests, traps, entrance, exit)
+      // Sample from pre-computed mutable tiles instead of scanning full grid
+      var mutableTiles = floor.mutableTiles;
+      var numToCheck = Math.max(1, Math.floor(mutableTiles.length * collapseChance));
       var changedTiles = [];
-      for (var wy = 1; wy < floor.height - 1; wy++) {
-        for (var wx = 1; wx < floor.width - 1; wx++) {
-          var wt = floor.grid[wy][wx];
-          if (Math.random() >= collapseChance) continue;
 
-          // Only toggle WALL <-> FLOOR
-          if (wt === TILE.WALL) {
-            // Check player is not standing here
-            var playerOnTile = false;
-            for (var wpi = 0; wpi < pArr.length; wpi++) {
-              if (pArr[wpi].x === wx && pArr[wpi].y === wy) { playerOnTile = true; break; }
+      // Fisher-Yates partial shuffle: pick numToCheck random tiles
+      for (var wsi = mutableTiles.length - 1; wsi > 0 && numToCheck > 0; wsi--) {
+        var swj = Math.floor(Math.random() * (wsi + 1));
+        var tmp = mutableTiles[wsi];
+        mutableTiles[wsi] = mutableTiles[swj];
+        mutableTiles[swj] = tmp;
+
+        var mt = mutableTiles[wsi];
+        var wt = floor.grid[mt.y][mt.x];
+        numToCheck--;
+
+        // Only toggle WALL <-> FLOOR
+        if (wt === TILE.WALL) {
+          // Check player is not standing here
+          var playerOnTile = false;
+          for (var wpi = 0; wpi < pArr.length; wpi++) {
+            if (pArr[wpi].x === mt.x && pArr[wpi].y === mt.y) { playerOnTile = true; break; }
+          }
+          if (!playerOnTile) {
+            floor.grid[mt.y][mt.x] = TILE.FLOOR;
+            changedTiles.push({ x: mt.x, y: mt.y, tile: TILE.FLOOR });
+          }
+        } else if (wt === TILE.FLOOR) {
+          var pOnFloor = false;
+          for (var wpi2 = 0; wpi2 < pArr.length; wpi2++) {
+            if (pArr[wpi2].x === mt.x && pArr[wpi2].y === mt.y) { pOnFloor = true; break; }
+          }
+          var enemyOnFloor = false;
+          for (var wei = 0; wei < floor.enemies.length; wei++) {
+            if (floor.enemies[wei].alive !== false && floor.enemies[wei].x === mt.x && floor.enemies[wei].y === mt.y) {
+              enemyOnFloor = true; break;
             }
-            if (!playerOnTile) {
-              floor.grid[wy][wx] = TILE.FLOOR;
-              changedTiles.push({ x: wx, y: wy, tile: TILE.FLOOR });
-            }
-          } else if (wt === TILE.FLOOR) {
-            var pOnFloor = false;
-            for (var wpi2 = 0; wpi2 < pArr.length; wpi2++) {
-              if (pArr[wpi2].x === wx && pArr[wpi2].y === wy) { pOnFloor = true; break; }
-            }
-            var enemyOnFloor = false;
-            for (var wei = 0; wei < floor.enemies.length; wei++) {
-              if (floor.enemies[wei].alive !== false && floor.enemies[wei].x === wx && floor.enemies[wei].y === wy) {
-                enemyOnFloor = true; break;
-              }
-            }
-            if (!pOnFloor && !enemyOnFloor) {
-              floor.grid[wy][wx] = TILE.WALL;
-              changedTiles.push({ x: wx, y: wy, tile: TILE.WALL });
-            }
+          }
+          if (!pOnFloor && !enemyOnFloor) {
+            floor.grid[mt.y][mt.x] = TILE.WALL;
+            changedTiles.push({ x: mt.x, y: mt.y, tile: TILE.WALL });
           }
         }
       }
@@ -747,30 +801,26 @@ function recomputePlayerVisibility(zoneId, socketId, floor) {
 
   var lightMap = getOrComputeLightMap(zoneId, floor);
 
-  // Build nearby players list for thermal vision
+  // Build nearby players list for thermal vision AND check torch/lantern sharing (single pass)
   var nearbyPlayers = [];
-  pMap.forEach(function(other) {
-    if (other.id !== socketId) {
-      nearbyPlayers.push(other);
-    }
-  });
-
-  // Check if nearby torch/lantern bearers extend this player's light
-  // (another player's torch within range shares light)
   var nearbyTorchLight = false;
   var nearbyLanternLight = false;
   pMap.forEach(function(other) {
     if (other.id === socketId) return;
-    if (!other.hasTorch && !other.hasLantern) return;
-    var tdx = Math.abs(other.x - pd.x);
-    var tdy = Math.abs(other.y - pd.y);
-    var tDist = Math.sqrt(tdx * tdx + tdy * tdy);
-    // Torch bearers share light within torch radius
-    if (other.hasTorch && tDist <= dungeonVision.TORCH_LIGHT_RADIUS) {
-      nearbyTorchLight = true;
-    }
-    if (other.hasLantern && tDist <= dungeonVision.LANTERN_LIGHT_RADIUS) {
-      nearbyLanternLight = true;
+    nearbyPlayers.push(other);
+    // Check if nearby torch/lantern bearers extend this player's light
+    if (!nearbyTorchLight || !nearbyLanternLight) {
+      if (other.hasTorch || other.hasLantern) {
+        var tdx = Math.abs(other.x - pd.x);
+        var tdy = Math.abs(other.y - pd.y);
+        var tDist = Math.sqrt(tdx * tdx + tdy * tdy);
+        if (!nearbyTorchLight && other.hasTorch && tDist <= dungeonVision.TORCH_LIGHT_RADIUS) {
+          nearbyTorchLight = true;
+        }
+        if (!nearbyLanternLight && other.hasLantern && tDist <= dungeonVision.LANTERN_LIGHT_RADIUS) {
+          nearbyLanternLight = true;
+        }
+      }
     }
   });
 
@@ -879,8 +929,7 @@ function safeSaveAccount(accounts, acc, context) {
 // ---------------------------------------------------------------------------
 
 function getTodayString() {
-  var d = new Date();
-  return d.getUTCFullYear() + '-' + (d.getUTCMonth() + 1) + '-' + d.getUTCDate();
+  return new Date().toISOString().slice(0, 10);
 }
 
 function floorHasPlayers(floorZoneId, state) {
@@ -889,31 +938,30 @@ function floorHasPlayers(floorZoneId, state) {
 }
 
 function touchLRU(zoneId, map, mapKey) {
-  for (var i = 0; i < floorAccessOrder.length; i++) {
-    if (floorAccessOrder[i].zoneId === zoneId) {
-      floorAccessOrder.splice(i, 1);
-      break;
-    }
-  }
-  floorAccessOrder.push({ zoneId: zoneId, map: map, mapKey: mapKey });
+  floorAccessOrder.delete(zoneId);   // remove if exists (no-op if absent)
+  floorAccessOrder.set(zoneId, { map: map, mapKey: mapKey }); // re-insert at end
 }
 
 function evictEmptyFloors(state) {
+  if (floorAccessOrder.size <= MAX_EMPTY_FLOORS) return;
+
   var emptyCount = 0;
-  for (var i = 0; i < floorAccessOrder.length; i++) {
-    var entry = floorAccessOrder[i];
-    if (!floorHasPlayers(entry.zoneId, state)) {
-      emptyCount++;
-    }
-  }
-  while (emptyCount > MAX_EMPTY_FLOORS && floorAccessOrder.length > 0) {
-    var oldest = floorAccessOrder.shift();
-    if (!floorHasPlayers(oldest.zoneId, state)) {
-      oldest.map.delete(oldest.mapKey);
+  floorAccessOrder.forEach(function(data, zoneId) {
+    if (!floorHasPlayers(zoneId, state)) emptyCount++;
+  });
+  if (emptyCount <= MAX_EMPTY_FLOORS) return;
+
+  // Iterate in insertion order (oldest first); delete empties until under limit
+  var iter = floorAccessOrder.entries();
+  var entry = iter.next();
+  while (!entry.done && emptyCount > MAX_EMPTY_FLOORS) {
+    var zoneId = entry.value[0];
+    var data = entry.value[1];
+    entry = iter.next(); // advance before potential delete
+    if (!floorHasPlayers(zoneId, state)) {
+      data.map.delete(data.mapKey);
+      floorAccessOrder.delete(zoneId);
       emptyCount--;
-    } else {
-      // Occupied floor — push it back to the end
-      floorAccessOrder.push(oldest);
     }
   }
 }
@@ -922,6 +970,7 @@ function getRiftFloor(floorNum) {
   var today = getTodayString();
   if (riftDate !== today) {
     riftFloors.clear();
+    floorAccessOrder.clear(); // Clear LRU on daily wipe (BUG-4)
     riftSeed = 'rift_' + today;
     riftDate = today;
   }
@@ -1068,6 +1117,7 @@ function buildFloorState(floor, dungeonId, state, zoneId, socketId) {
     chests: [],
     traps: [],
     npcs: [],
+    corpses: [],
     camps: [],
     // Form-gated interactables (animal morphing exploration)
     formInteractables: (floor.formInteractables || []).filter(function(fi) { return !fi.explored; }).map(function(fi) {
@@ -1099,6 +1149,7 @@ function buildFloorState(floor, dungeonId, state, zoneId, socketId) {
       baseState.chests = filtered.chests;
       baseState.traps = filtered.traps;
       baseState.npcs = filtered.npcs;
+      baseState.corpses = filtered.corpses || [];
       baseState.camps = filtered.camps;
       baseState.thermalEntities = filtered.thermalEntities;
       baseState.tremorIndicators = filtered.tremorIndicators;
@@ -1133,6 +1184,9 @@ function buildFloorState(floor, dungeonId, state, zoneId, socketId) {
     });
     baseState.traps = floor.traps.filter(function(t) { return t.triggered; });
     baseState.npcs = floor.npcs.filter(function(n) { return !n.interacted; });
+    baseState.corpses = (floor.corpses || []).map(function(cr) {
+      return { x: cr.x, y: cr.y, id: cr.id, name: cr.name, description: cr.description, examined: cr.examined };
+    });
     baseState.camps = floor.camps || [];
   }
 
@@ -1181,6 +1235,10 @@ function getFloorForPlayer(socketId) {
   if (info.dungeonId.indexOf('camp_') === 0) {
     var campStructId = info.structureId || info.dungeonId.slice(5);
     return getCampFloor(campStructId, info.floorNum);
+  }
+  if (info.dungeonId.indexOf('minirift_') === 0) {
+    var mrRiftId = info.riftId || info.dungeonId.slice(9);
+    return overworldRifts.getRiftFloor(mrRiftId, info.floorNum);
   }
   return null;
 }
@@ -1887,6 +1945,7 @@ function applyFloorModifierPostGeneration(floor) {
       if (tvNE.y >= 0 && tvNE.y < floor.height && tvNE.x >= 0 && tvNE.x < floor.width) {
         tvNE.alive = true; tvNE.aiState = undefined;
         floor.enemies.push(tvNE);
+        indexNewEnemy(floor, tvNE);
       }
     }
   }
@@ -1916,6 +1975,7 @@ function applyFloorModifierPostGeneration(floor) {
       if (hsNE.y >= 0 && hsNE.y < floor.height && hsNE.x >= 0 && hsNE.x < floor.width) {
         hsNE.alive = true; hsNE.aiState = undefined;
         floor.enemies.push(hsNE);
+        indexNewEnemy(floor, hsNE);
       }
     }
   }
@@ -2411,6 +2471,13 @@ function initPlayerCombatState(socketId, accounts, accKey) {
     }
   }
 
+  // Ascension: Iron Resolve — +5% vigor per rank
+  var ascTree = acc.ascensionTree || {};
+  var ironResolveRank = ascTree['iron_resolve'] || 0;
+  if (ironResolveRank > 0) {
+    statsCopy['vigor'] = Math.round(statsCopy['vigor'] * (1 + ironResolveRank * 0.05));
+  }
+
   // Now compute stats using the boosted stat copy
   var computed = rpgData.computeStats(statsCopy, acc.level || 1, acc.race);
 
@@ -2493,7 +2560,7 @@ function initPlayerCombatState(socketId, accounts, accKey) {
     maxStamina: 100,
     critChance: computed.critChance + bonusCrit + weaponCritBonus + (combatSkillBonuses.critBonus || 0) + armorStats.totalCritBonus,
     dodgeChance: computed.dodgeChance + bonusDodge,
-    meleeDmgMult: computed.meleeDamageMultiplier + bonusMeleeDmg + (combatSkillBonuses.damageBonus || 0),
+    meleeDmgMult: computed.meleeDamageMultiplier + bonusMeleeDmg + (combatSkillBonuses.damageBonus || 0) + (companions.getTotalCompanionDamage(acc) * 0.01),
     magicDmgMult: computed.magicPowerMultiplier + bonusMagicDmg,
     dungeonDmgBonus: bonusDungeonDmg,
     bossDmgBonus: bonusBossDmg,
@@ -2947,7 +3014,10 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
       var baseXp = enemy.xp || 10;
       // Card: dungeon_xp_bonus — percentage boost to dungeon kill XP
       var cardDungeonXpBonus = (combat && combat.dungeonXpBonus) ? combat.dungeonXpBonus : 0;
-      var finalXp = Math.floor(baseXp * killXpMult * serverXpRate * (1 + cardDungeonXpBonus));
+      // Ascension: Deep Knowledge — +5% XP per rank
+      var killAcc = accounts.loadAccount(accKey);
+      var deepKnowledgeBonus = (killAcc && killAcc.ascensionTree && killAcc.ascensionTree['deep_knowledge']) ? killAcc.ascensionTree['deep_knowledge'] * 0.05 : 0;
+      var finalXp = Math.floor(baseXp * killXpMult * serverXpRate * (1 + cardDungeonXpBonus + deepKnowledgeBonus));
       var xpResult = accounts.addSkillXp(accKey, 'dungeon_delving', finalXp);
 
       var goldGained = enemy.gold || 0;
@@ -2992,6 +3062,28 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
         accounts.addSkillXp(accKey, 'anatomy', 50);
       }
 
+      // --- Card Evolution XP: combat category on kills ---
+      var _killEvoXp = enemy.isBoss ? 10 : 5;
+      accounts.gainArchetypeCategoryXp(accKey, 'combat', _killEvoXp);
+      // Magic-tagged enemies also feed the 'magic' category
+      if (enemy.tags && enemy.tags.indexOf('magic') >= 0) {
+        accounts.gainArchetypeCategoryXp(accKey, 'magic', _killEvoXp);
+      }
+
+      // --- Pet evolution XP on kills ---
+      var petKillAcc = accounts.loadAccount(accKey);
+      if (petKillAcc && petKillAcc.activePet) {
+        var petEvoXp = enemy.isBoss ? 50 : 10;
+        var petEvoResult = petsHandler.awardPetEvoXp(petKillAcc, petEvoXp);
+        accounts.saveAccount(petKillAcc);
+        if (petEvoResult && petEvoResult.evolved) {
+          var killSocket = io.sockets.sockets.get(socketId);
+          if (killSocket) {
+            killSocket.emit('pet_evolved', { petId: petKillAcc.activePet, newLevel: petEvoResult.newLevel, newName: petEvoResult.newName });
+          }
+        }
+      }
+
       // --- Procedural loot drop on regular enemy kills (15% base chance, scales with depth) ---
       if (!enemy.isBoss) {
         var dropChance = 0.15 + Math.min(floorNum * 0.003, 0.15); // 15%-30%
@@ -3010,6 +3102,7 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
                   source: 'drop',
                   depth: floorNum,
                   forcedRarity: mlSpec.rarity,
+                  luckBonus: accounts.getPlayerLuck(accKey),
                 });
                 if (mlItem) {
                   mlItem.maxDurability = accounts.getMaxDurability(mlBaseType);
@@ -3078,6 +3171,60 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
               });
             }
           }
+          // Mini-rift boss kill: destroy rift + award rewards + cleanse corruption
+          if (killInfo && killInfo.dungeonId.indexOf('minirift_') === 0) {
+            var mrKillRiftId = killInfo.riftId || killInfo.dungeonId.slice(9);
+            var mrKillRift = overworldRifts.getRift(mrKillRiftId);
+            if (mrKillRift && killInfo.floorNum === mrKillRift.totalFloors) {
+              // This is the final floor boss — seal the rift
+              overworldRifts.destroyRift(mrKillRiftId, user.name);
+
+              var mrRewards = dungeonData.getMiniRiftBossRewards(mrKillRift.tier);
+
+              // Award rewards
+              accounts.addChips(accKey, mrRewards.gold);
+              accounts.addResource(accKey, 'dark_crystal', mrRewards.darkCrystal);
+              accounts.addResource(accKey, 'purification_crystal', mrRewards.purificationCrystal);
+              accounts.addPendingPack(accKey, mrRewards.cardPacks);
+              accounts.addXp(accKey, mrRewards.xpBonus);
+
+              // Broadcast world event
+              io.emit('world_event', {
+                title: 'A Rift Sealed!',
+                description: user.name + ' has sealed ' + mrKillRift.name + '! The Soldier\'s desperate reach weakens as reality knits itself together. Corruption recedes from the land.',
+                type: 'rift_sealed',
+              });
+
+              // Cleanse corruption around rift location
+              if (deps.directorLich && typeof deps.directorLich.cleanseRiftCorruption === 'function') {
+                deps.directorLich.cleanseRiftCorruption(mrKillRift.chunkX, mrKillRift.chunkY, mrKillRift.corruptionRadius);
+              }
+
+              // Notify clearing player of rewards
+              socket.emit('rift_sealed_rewards', {
+                riftId: mrKillRiftId,
+                name: mrKillRift.name,
+                tier: mrKillRift.tier,
+                gold: mrRewards.gold,
+                darkCrystal: mrRewards.darkCrystal,
+                purificationCrystal: mrRewards.purificationCrystal,
+                cardPacks: mrRewards.cardPacks,
+                xpBonus: mrRewards.xpBonus,
+              });
+
+              // Broadcast destruction to all clients
+              io.emit('rift_destroyed', {
+                riftId: mrKillRiftId,
+                name: mrKillRift.name,
+                worldX: mrKillRift.worldX,
+                worldY: mrKillRift.worldY,
+                clearedBy: user.name,
+                reason: 'sealed',
+              });
+
+              console.log('[dungeon] Mini-rift sealed: ' + mrKillRift.name + ' (tier ' + mrKillRift.tier + ') by ' + user.name);
+            }
+          }
           // --- PROCEDURAL LOOT DROPS on boss kill ---
           try {
             var bossLootSpecs = lootGen.rollDungeonLoot(floorNum, true, false);
@@ -3093,6 +3240,7 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
                   source: 'boss',
                   depth: floorNum,
                   forcedRarity: blSpec.rarity,
+                  luckBonus: accounts.getPlayerLuck(accKey),
                 });
                 if (blItem) {
                   // Set durability
@@ -3135,6 +3283,9 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
           } catch (bookErr) {
             console.error('[dungeon_boss_kill] Book drop error:', bookErr.message);
           }
+
+          // Award rift_wardens faction rep for boss kills
+          factions.addRep(killAcc, 'rift_wardens', 150);
         }
         safeSaveAccount(accounts, killAcc, 'tc_enemy_kill');
       }
@@ -3270,6 +3421,11 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
         }
       }
       return { success: true, hpRestored: hpRestored, buff: buff, resourceType: resourceType };
+    },
+    addSkillXp: function(socketId, skillName, amount) {
+      var accKey = socketAccountMap.get(socketId);
+      if (!accKey || !amount) return;
+      accounts.addSkillXp(accKey, skillName, amount);
     },
   };
 }
@@ -3728,6 +3884,7 @@ var ambushInterval = setInterval(function() {
           dungeonAI.initEnemyAI(ambushEnemies[j], 'skirmisher');
           ambushEnemies[j].aiState = 'alert'; // ambush enemies start alert
           floor.enemies.push(ambushEnemies[j]);
+          indexNewEnemy(floor, ambushEnemies[j]);
         }
         // Store zone id + data for external emit (done by the io ref in init)
         if (!floor._pendingAmbushes) floor._pendingAmbushes = [];
@@ -3752,7 +3909,7 @@ if (ambushInterval && ambushInterval.unref) ambushInterval.unref();
 module.exports = {
   getPlayerCombat: getPlayerCombat,
   init(io, socket, deps) {
-    var { user, state, socketAccountMap, accounts, checkEventRate } = deps;
+    var { user, state, socketAccountMap, accounts, checkEventRate, applyRateGrace } = deps;
 
     // Store references for AI tick system (module-level, set once)
     if (!_io) _io = io;
@@ -3968,6 +4125,10 @@ module.exports = {
         var transCampId = dungeonId.slice(5);
         var transCampStruct = overworldStructures.getStructure(transCampId);
         displayName = (transCampStruct ? transCampStruct.name : 'Structure') + ' F' + floorNum;
+      } else if (dungeonId.indexOf('minirift_') === 0) {
+        var transRiftId = dungeonId.slice(9);
+        var transRift = overworldRifts.getRift(transRiftId);
+        displayName = (transRift ? transRift.name : 'Rift') + ' F' + floorNum;
       } else {
         displayName = dungeonId.replace('cave_', 'Cave ') + ' F' + floorNum;
       }
@@ -4178,6 +4339,7 @@ module.exports = {
     socket.on('dungeon_enter', function(data) {
       try {
         if (!data || typeof data.dungeonId !== 'string') return;
+        if (!applyRateGrace(socket, 'dungeon_enter', 6, 10000)) return;
 
         var accKey = socketAccountMap.get(socket.id);
         if (!accKey) {
@@ -4188,6 +4350,13 @@ module.exports = {
         var acc = accounts.loadAccount(accKey);
         if (!acc) {
           socket.emit('dungeon_error', { message: 'Account not found' });
+          return;
+        }
+
+        // Prison check: jailed players cannot enter dungeons
+        if (prison.isJailed(acc)) {
+          var remaining = prison.getRemainingTime(acc);
+          socket.emit('dungeon_error', { message: 'You are in jail. Time remaining: ' + Math.ceil(remaining / 1000) + 's. Pay bail or serve your time.' });
           return;
         }
 
@@ -4206,8 +4375,13 @@ module.exports = {
           }
 
           var floorNum = 1;
+          // Ascension: Rift Veteran — start at a higher floor (+5 per rank)
+          var riftVeteranRank = (acc.ascensionTree && acc.ascensionTree['rift_veteran']) || 0;
+          if (riftVeteranRank > 0) {
+            floorNum = Math.max(1, 1 + riftVeteranRank * 5);
+          }
           if (typeof data.floorNum === 'number' && data.floorNum >= 1 && data.floorNum <= dp.deepestFloor) {
-            floorNum = Math.floor(data.floorNum);
+            floorNum = Math.max(floorNum, Math.floor(data.floorNum));
           }
 
           var floor = getRiftFloor(floorNum);
@@ -4468,10 +4642,63 @@ module.exports = {
 
           doZoneTransition(data.dungeonId, campFloorNum, campFloor, accKey);
 
+        } else if (data.dungeonId.indexOf('minirift_') === 0) {
+          // Mini-rift dungeon: secondary spatial tear
+          var mrEnterId = data.dungeonId.slice(9);
+          var mrRift = overworldRifts.getRift(mrEnterId);
+          if (!mrRift) {
+            socket.emit('dungeon_error', { message: 'This rift no longer exists' });
+            return;
+          }
+
+          if (mrRift.cleared || mrRift.destroyed) {
+            socket.emit('dungeon_error', { message: 'This rift has already been sealed' });
+            return;
+          }
+
+          // Level warning (non-blocking)
+          if (acc.level && mrRift.minPlayerLevel && acc.level < mrRift.minPlayerLevel) {
+            socket.emit('dungeon_warning', {
+              message: 'Warning: ' + mrRift.name + ' (Tier ' + mrRift.tier + ') is designed for level ' + mrRift.minPlayerLevel + '+. You are level ' + acc.level + '. Proceed with caution.',
+            });
+          }
+
+          var mrFloorNum = 1;
+          var mrFloor = overworldRifts.getRiftFloor(mrEnterId, mrFloorNum);
+          if (!mrFloor) {
+            socket.emit('dungeon_error', { message: 'Failed to generate rift floor' });
+            return;
+          }
+
+          var mrPdInfo = {
+            dungeonId: data.dungeonId,
+            floorNum: mrFloorNum,
+            biome: mrRift.biome || 12,
+            riftId: mrEnterId,
+            totalFloors: mrRift.totalFloors,
+          };
+          playerDungeons.set(socket.id, mrPdInfo);
+
+          overworldRifts.addPlayer(mrEnterId, socket.id);
+
+          dp.activeCave = data.dungeonId;
+          dp.activeCaveFloor = mrFloorNum;
+          safeSaveAccount(accounts, acc, 'minirift_enter');
+
+          doZoneTransition(data.dungeonId, mrFloorNum, mrFloor, accKey);
+
         } else {
           socket.emit('dungeon_error', { message: 'Unknown dungeon type' });
           return;
         }
+
+        // --- Fire glossary trigger for dungeon entry ---
+        try {
+          var dungeonTerms = knowledgeHandler.fireGlossaryTrigger(accounts, accKey, 'dungeon_enter');
+          for (var dti = 0; dti < dungeonTerms.length; dti++) {
+            socket.emit('knowledge_term_unlocked', dungeonTerms[dti]);
+          }
+        } catch (e) { /* glossary trigger non-fatal */ }
 
         // --- Track dungeon entry achievement ---
         var dungeonEnterUnlocks = challengesHandler.trackAchievementProgress(accounts, accKey, 'dungeon_enter', 1, socket);
@@ -4626,6 +4853,19 @@ module.exports = {
           }
           // Remove player from structure tracking
           overworldStructures.removePlayer(exitCampId, socket.id);
+        } else if (info.dungeonId.indexOf('minirift_') === 0) {
+          // Mini-rift: return to overworld at rift position
+          destZone = 'overworld';
+          var exitRiftId = info.riftId || info.dungeonId.slice(9);
+          var exitRift = overworldRifts.getRift(exitRiftId);
+          if (exitRift) {
+            destX = exitRift.worldX;
+            destY = exitRift.worldY;
+          } else {
+            destX = 0;
+            destY = 0;
+          }
+          overworldRifts.removePlayer(exitRiftId, socket.id);
         } else {
           // Cave: return to overworld at original cave position
           destZone = 'overworld';
@@ -4689,6 +4929,7 @@ module.exports = {
       try {
         if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
         if (!isFinite(data.x) || !isFinite(data.y)) return;
+        if (!applyRateGrace(socket, 'dungeon_move', 60, 1000)) return;
 
         var info = playerDungeons.get(socket.id);
         if (!info) return;
@@ -5118,6 +5359,18 @@ module.exports = {
               return;
             }
           }
+        } else if (info.dungeonId.indexOf('minirift_') === 0) {
+          var mrTotalFloors = info.totalFloors || 10;
+          if (nextFloorNum > mrTotalFloors) {
+            if (shortcutSkipped > 0) {
+              nextFloorNum = mrTotalFloors;
+              shortcutSkipped = nextFloorNum - info.floorNum - 1;
+            }
+            if (nextFloorNum > mrTotalFloors) {
+              socket.emit('dungeon_error', { message: 'You have reached the deepest floor of this rift' });
+              return;
+            }
+          }
         }
 
         // Notify client about shortcut discovery
@@ -5222,6 +5475,18 @@ module.exports = {
               var campDp = ensureDungeonProgress(campAcc);
               campDp.activeCaveFloor = nextFloorNum;
               safeSaveAccount(accounts, campAcc, 'descend_camp');
+            }
+          }
+        } else if (info.dungeonId.indexOf('minirift_') === 0) {
+          var mrDescId = info.riftId || info.dungeonId.slice(9);
+          nextFloor = overworldRifts.getRiftFloor(mrDescId, nextFloorNum);
+
+          if (accKey) {
+            var mrAcc = accounts.loadAccount(accKey);
+            if (mrAcc) {
+              var mrDp = ensureDungeonProgress(mrAcc);
+              mrDp.activeCaveFloor = nextFloorNum;
+              safeSaveAccount(accounts, mrAcc, 'descend_minirift');
             }
           }
         } else {
@@ -5350,10 +5615,16 @@ module.exports = {
     // ------------------------------------------------------------------
     // dungeon_attack — triggers turn-based tactical combat
     // ------------------------------------------------------------------
+    // TODO: When PvP dungeon combat is implemented, apply karma penalties here:
+    //   karma.addKarma(attackerAcc, karma.CRIME_KARMA_COSTS.assault, 'assault');
+    //   karma.addKarma(killerAcc, karma.CRIME_KARMA_COSTS.murder, 'murder');
+    // Only apply in non-PvP zones; PvP-flagged zones should be exempt.
+
     socket.on('dungeon_attack', function(data) {
       try {
         if (!data || typeof data.enemyIndex !== 'number') return;
         if (!isFinite(data.enemyIndex)) return;
+        if (!applyRateGrace(socket, 'dungeon_attack', 20, 1000)) return;
 
         var info = playerDungeons.get(socket.id);
         if (!info) return;
@@ -5438,6 +5709,7 @@ module.exports = {
       try {
         if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
         if (!isFinite(data.x) || !isFinite(data.y)) return;
+        if (!applyRateGrace(socket, 'dungeon_open_chest', 10, 2000)) return;
 
         var info = playerDungeons.get(socket.id);
         if (!info) return;
@@ -5507,6 +5779,7 @@ module.exports = {
             x: x, y: y, alive: true, isBoss: false, isMimic: true, archetype: 'bruiser',
           };
           floor.enemies.push(mEnemy);
+          indexNewEnemy(floor, mEnemy);
           dungeonAI.initEnemyAI(mEnemy, 'bruiser');
           mEnemy.aiState = 'alert';
           var mIdx = floor.enemies.length - 1;
@@ -5649,6 +5922,7 @@ module.exports = {
                 source: 'chest',
                 depth: info.floorNum,
                 forcedRarity: clSpec.rarity,
+                luckBonus: accounts.getPlayerLuck(accKey),
               });
               if (clItem) {
                 clItem.maxDurability = accounts.getMaxDurability(clBaseType);
@@ -5684,6 +5958,148 @@ module.exports = {
         socket.emit('dungeon_chest_result', chestResultPayload);
       } catch (err) {
         console.error('[dungeon_open_chest] Error:', err.message);
+        socket.emit('dungeon_error', { message: 'Internal server error' });
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // dungeon_examine_corpse
+    // ------------------------------------------------------------------
+    socket.on('dungeon_examine_corpse', function(data) {
+      try {
+        if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
+        if (!isFinite(data.x) || !isFinite(data.y)) return;
+        if (!applyRateGrace(socket, 'dungeon_examine_corpse', 10, 2000)) return;
+
+        var info = playerDungeons.get(socket.id);
+        if (!info) return;
+
+        var floor = getFloorForPlayer(socket.id);
+        if (!floor) return;
+
+        var x = Math.floor(data.x);
+        var y = Math.floor(data.y);
+
+        // Find corpse at x,y
+        if (!floor.corpses || floor.corpses.length === 0) {
+          socket.emit('dungeon_error', { message: 'No remains on this floor' });
+          return;
+        }
+        var corpse = null;
+        for (var ci = 0; ci < floor.corpses.length; ci++) {
+          if (floor.corpses[ci].x === x && floor.corpses[ci].y === y) {
+            corpse = floor.corpses[ci];
+            break;
+          }
+        }
+
+        if (!corpse) {
+          socket.emit('dungeon_error', { message: 'No remains at that position' });
+          return;
+        }
+        if (corpse.examined) {
+          socket.emit('dungeon_error', { message: 'These remains have already been examined' });
+          return;
+        }
+
+        // Proximity check
+        var pos = state.playerPositions.get(socket.id);
+        if (!pos) return;
+        var ptx = Math.floor(pos.x / 32);
+        var pty = Math.floor(pos.y / 32);
+        if (Math.abs(ptx - x) > 1 || Math.abs(pty - y) > 1) {
+          socket.emit('dungeon_error', { message: 'Too far from remains' });
+          return;
+        }
+
+        // Mark examined and broadcast
+        corpse.examined = true;
+        var corpseZoneId = getZoneIdForDungeon(info.dungeonId, info.floorNum);
+        io.to('zone:' + corpseZoneId).emit('dungeon_corpse_examined', {
+          x: x, y: y, examinedBy: user.name,
+        });
+
+        var accKey = socketAccountMap.get(socket.id);
+        if (!accKey) return;
+
+        // Get dungeon skill bonuses
+        var corpseCombat = getPlayerCombat(socket.id);
+        var corpseSkillBonuses = (corpseCombat && corpseCombat.skillBonuses) ? corpseCombat.skillBonuses : null;
+
+        // Award gold
+        var corpseGold = corpse.gold || 0;
+        var corpseAllGoldMult = (corpseSkillBonuses && corpseSkillBonuses.allGoldMult) ? corpseSkillBonuses.allGoldMult : 1;
+        corpseGold = Math.floor(corpseGold * corpseAllGoldMult);
+        if (corpseGold > 0) {
+          accounts.updateChips(accKey, corpseGold);
+        }
+
+        // Award resource
+        if (corpse.resource && corpse.resourceAmount > 0) {
+          accounts.addResource(accKey, corpse.resource, corpse.resourceAmount);
+        }
+
+        // Card pack (low chance)
+        if (corpse.hasCard) {
+          accounts.addPendingPack(accKey, 1);
+        }
+
+        // Book drop — boosted by bookChanceMult
+        var corpseBookId = null;
+        try {
+          var corpseFloorTheme = floor._theme || floor.theme || null;
+          // Determine effective tier based on floor depth
+          var corpseBookTier;
+          if (info.floorNum >= 20) corpseBookTier = 'rare';
+          else if (info.floorNum >= 10) corpseBookTier = 'uncommon';
+          else corpseBookTier = 'common';
+          // bookChanceMult > 1 upgrades tier for scholars/robed skeletons
+          if (corpse.bookChanceMult >= 2.0 && corpseBookTier === 'common') {
+            corpseBookTier = 'uncommon';
+          }
+          corpseBookId = loreBooks.rollBookDrop(corpseBookTier, info.floorNum, corpseFloorTheme, false);
+          if (corpseBookId) {
+            var corpseBookResult = knowledgeHandler.discoverBook(accounts, accKey, corpseBookId);
+            if (corpseBookResult) {
+              socket.emit('knowledge_book_discovered', {
+                bookId: corpseBookResult.book.id, title: corpseBookResult.book.title,
+                rarity: corpseBookResult.book.rarity, source: 'corpse',
+              });
+              for (var cbti = 0; cbti < corpseBookResult.unlockedTerms.length; cbti++) {
+                socket.emit('knowledge_term_unlocked', corpseBookResult.unlockedTerms[cbti]);
+              }
+            }
+          }
+        } catch (corpseBookErr) {
+          console.error('[dungeon_examine_corpse] Book drop error:', corpseBookErr.message);
+        }
+
+        // Award dungeon_delving xp
+        var corpseBaseXp = 5 + info.floorNum;
+        var corpseXpMult = (corpseSkillBonuses && corpseSkillBonuses.dungeonXpMult) ? corpseSkillBonuses.dungeonXpMult : 1;
+        var corpseServerXpRate = (deps.serverRules && deps.serverRules.xpRate) ? deps.serverRules.xpRate : 1;
+        var corpseCardXpBonus = (corpseCombat && corpseCombat.dungeonXpBonus) ? corpseCombat.dungeonXpBonus : 0;
+        var corpseXpAmount = Math.floor(corpseBaseXp * corpseXpMult * corpseServerXpRate * (1 + corpseCardXpBonus));
+        var corpseXpResult = accounts.addSkillXp(accKey, 'dungeon_delving', corpseXpAmount);
+
+        var corpseResultPayload = {
+          x: x,
+          y: y,
+          name: corpse.name,
+          description: corpse.description,
+          gold: corpseGold,
+          resource: corpse.resource,
+          resourceAmount: corpse.resourceAmount,
+          hasCard: corpse.hasCard,
+          xp: corpseXpAmount,
+          skillResult: corpseXpResult,
+        };
+        if (corpseBookId) {
+          corpseResultPayload.bookFound = corpseBookId;
+        }
+        socket.emit('dungeon_corpse_result', corpseResultPayload);
+      } catch (err) {
+        console.error('[dungeon_examine_corpse] Error:', err.message);
         socket.emit('dungeon_error', { message: 'Internal server error' });
       }
     });
@@ -6751,11 +7167,48 @@ module.exports = {
     });
 
     // ------------------------------------------------------------------
+    // dungeon_use_weapon_special — use equipped weapon's special ability
+    // ------------------------------------------------------------------
+    socket.on('dungeon_use_weapon_special', function(data) {
+      try {
+        var info = playerDungeons.get(socket.id);
+        if (!info || !info.floor) {
+          socket.emit('dungeon_error', { message: 'Not in a dungeon.' });
+          return;
+        }
+        // Weapon specials are handled through the tactical combat system
+        // via tc_combat_action with action='ability'. This stub prevents
+        // silent failure on the client side.
+        socket.emit('dungeon_error', { message: 'Use abilities through combat (equip a weapon card).' });
+      } catch (err) {
+        console.error('[dungeon_use_weapon_special] Error:', err.message);
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // dungeon_use_inscription — activate an inscription slot
+    // ------------------------------------------------------------------
+    socket.on('dungeon_use_inscription', function(data) {
+      try {
+        var info = playerDungeons.get(socket.id);
+        if (!info || !info.floor) {
+          socket.emit('dungeon_error', { message: 'Not in a dungeon.' });
+          return;
+        }
+        // Inscriptions are a future system — acknowledge but inform
+        socket.emit('dungeon_error', { message: 'Inscription system not yet available.' });
+      } catch (err) {
+        console.error('[dungeon_use_inscription] Error:', err.message);
+      }
+    });
+
+    // ------------------------------------------------------------------
     // dungeon_chat — proximity dungeon chat with sound propagation
     // ------------------------------------------------------------------
     socket.on('dungeon_chat', function(data) {
       try {
         if (!data || typeof data.message !== 'string') return;
+        if (!applyRateGrace(socket, 'dungeon_chat', 20, 5000)) return;
 
         var info = playerDungeons.get(socket.id);
         if (!info) return;
@@ -6949,6 +7402,10 @@ module.exports = {
         var promoted = newRank.name.toLowerCase() !== dp.guildRank;
         dp.guildRank = newRank.name.toLowerCase();
 
+        // Award karma and faction rep for quest completion
+        karma.addKarma(acc, 2, 'quest_complete');
+        factions.addRep(acc, 'adventure_guild', 100);
+
         safeSaveAccount(accounts, acc, 'quest_complete');
 
         socket.emit('dungeon_quest_complete_result', {
@@ -7041,6 +7498,11 @@ module.exports = {
       if (info && info.dungeonId && info.dungeonId.indexOf('camp_') === 0) {
         var dcCampId = info.structureId || info.dungeonId.slice(5);
         overworldStructures.removePlayer(dcCampId, socket.id);
+      }
+      // Clean up mini-rift player tracking
+      if (info && info.dungeonId && info.dungeonId.indexOf('minirift_') === 0) {
+        var dcRiftId = info.riftId || info.dungeonId.slice(9);
+        overworldRifts.removePlayer(dcRiftId, socket.id);
       }
       removePlayerFromFloor(socket.id);
       playerDungeons.delete(socket.id);

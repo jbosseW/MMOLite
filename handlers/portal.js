@@ -3,6 +3,7 @@
 // Handles: portal_list, portal_travel, portal_craft, portal_destroy
 
 var rpgData = require('../rpg-data');
+var prison = require('./prison');
 
 // ---------------------------------------------------------------------------
 // Anchor Town Portal Definitions
@@ -60,9 +61,12 @@ var PERSONAL_PORTAL_RANGE = 256;
 
 // Teleport cooldown (milliseconds)
 var TELEPORT_COOLDOWN_MS = 30000;
+var HOME_TELEPORT_COOLDOWN_MS = 120000; // 120s for home teleport
 
 // Per-account teleport cooldown (survives reconnect)
 var accountTeleportTimes = new Map();
+var homeTelepCooldowns = new Map(); // accKey -> timestamp for home teleport
+var _activeRaidAlerts = new Set();  // accKeys with active raid alerts (bypass cooldown)
 
 // Clean up stale teleport cooldown entries every 60 seconds
 setInterval(function() {
@@ -124,6 +128,7 @@ function isInAnchorTown(zoneId) {
 module.exports = {
   ANCHOR_PORTALS: ANCHOR_PORTALS,
   PORTAL_CRAFT_COST: PORTAL_CRAFT_COST,
+  _activeRaidAlerts: _activeRaidAlerts, // exposed for raid system
 
   init(io, socket, deps) {
     var { user, state, socketAccountMap, accounts, checkEventRate } = deps;
@@ -175,6 +180,13 @@ module.exports = {
         var accKey = socketAccountMap.get(socket.id);
         if (!accKey) {
           socket.emit('portal_error', { message: 'No account linked' });
+          return;
+        }
+
+        // Prison check: jailed players cannot use portals
+        var portalAcc = accounts.loadAccount(accKey);
+        if (portalAcc && prison.isJailed(portalAcc)) {
+          socket.emit('portal_error', { message: 'You are in jail. Cannot use portals.' });
           return;
         }
 
@@ -331,6 +343,107 @@ module.exports = {
 
       } catch (err) {
         console.error('[portal_travel] Error:', err.message);
+        socket.emit('portal_error', { message: 'Internal server error' });
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // home_teleport: teleport to own plot from anywhere
+    // ------------------------------------------------------------------
+    socket.on('home_teleport', function() {
+      try {
+        var accKey = socketAccountMap.get(socket.id);
+        if (!accKey) {
+          socket.emit('portal_error', { message: 'No account linked' });
+          return;
+        }
+
+        var acc = accounts.loadAccount(accKey);
+        if (!acc || !acc.plotId) {
+          socket.emit('portal_error', { message: 'You do not own a plot' });
+          return;
+        }
+
+        // Check cooldown (bypassed during raid alert)
+        var now = Date.now();
+        var hasRaidAlert = _activeRaidAlerts.has(accKey);
+        if (!hasRaidAlert) {
+          var lastHomeTP = homeTelepCooldowns.get(accKey) || 0;
+          if (now - lastHomeTP < HOME_TELEPORT_COOLDOWN_MS) {
+            var remaining = Math.ceil((HOME_TELEPORT_COOLDOWN_MS - (now - lastHomeTP)) / 1000);
+            socket.emit('portal_error', { message: 'Home teleport on cooldown (' + remaining + 's remaining)' });
+            return;
+          }
+        }
+
+        // Find the plot zone
+        var plotZoneId = 'plot_' + accKey;
+        if (!state.zones.has(plotZoneId)) {
+          socket.emit('portal_error', { message: 'Your plot zone is not loaded' });
+          return;
+        }
+
+        var currentZoneId = state.playerZones.get(socket.id);
+        if (currentZoneId === plotZoneId) {
+          socket.emit('portal_error', { message: 'You are already at your plot' });
+          return;
+        }
+
+        // Execute teleport
+        if (currentZoneId) {
+          socket.leave('zone:' + currentZoneId);
+          state.leaveZone(socket.id);
+          io.to('zone:' + currentZoneId).emit('player_left_zone', {
+            playerId: socket.id,
+            playerName: user.name,
+            zoneId: currentZoneId,
+          });
+        }
+
+        // Teleport to center of plot
+        var destX = 2048;
+        var destY = 2048;
+        var joinResult = state.joinZone(socket.id, plotZoneId, destX, destY);
+        if (!joinResult) {
+          if (currentZoneId) {
+            state.joinZone(socket.id, currentZoneId, 2048, 2048);
+            socket.join('zone:' + currentZoneId);
+          }
+          socket.emit('portal_error', { message: 'Failed to teleport to plot' });
+          return;
+        }
+
+        socket.join('zone:' + plotZoneId);
+        accounts.setLastLocation(accKey, plotZoneId, destX, destY);
+        socket.emit('zone_state', state.getZoneState(plotZoneId));
+
+        var newPos = state.playerPositions.get(socket.id);
+        socket.to('zone:' + plotZoneId).emit('player_entered_zone', {
+          id: socket.id,
+          name: user.name,
+          color: user.color,
+          tag: user.tag,
+          avatar: user.avatar || null,
+          x: newPos ? newPos.x : destX,
+          y: newPos ? newPos.y : destY,
+          facing: newPos ? newPos.facing : 'down',
+          zoneId: plotZoneId,
+        });
+
+        socket.emit('portal_traveled', {
+          destinationId: 'home',
+          destinationName: 'Home Plot',
+          zoneId: plotZoneId,
+          x: destX,
+          y: destY,
+        });
+
+        homeTelepCooldowns.set(accKey, Date.now());
+        if (hasRaidAlert) _activeRaidAlerts.delete(accKey);
+
+        console.log('[portal] ' + user.name + ' home teleported to plot ' + plotZoneId);
+      } catch (err) {
+        console.error('[home_teleport] Error:', err.message);
         socket.emit('portal_error', { message: 'Internal server error' });
       }
     });

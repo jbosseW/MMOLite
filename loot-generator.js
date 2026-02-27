@@ -869,6 +869,7 @@ function composeName(baseName, prefix, suffix, uniqueName, setName, quality) {
 function generateItem(baseType, baseDef, options) {
   options = options || {};
   var source = options.source || 'drop';
+  var luckBonus = options.luckBonus || 0;
   var depth = options.depth || 1;
   var rarity = options.forcedRarity || baseDef.rarity || 'common';
 
@@ -1015,6 +1016,42 @@ function generateItem(baseType, baseDef, options) {
     // Effects from base def (stat boosts on jewelry etc)
     effects: baseDef.effects || null,
   };
+
+  // Apply craft skill stat bonus: higher craftSkillLevel improves base stats
+  var craftSkillLevel = options.craftSkillLevel || 0;
+  if (craftSkillLevel > 0) {
+    var craftBonus = 1 + Math.min(craftSkillLevel * 0.003, 0.20); // up to +20% at skill 67
+    var craftStatKeys = ['damage', 'magicDamage', 'defense', 'magicResist', 'hpRegen', 'manaRegen'];
+    for (var csk = 0; csk < craftStatKeys.length; csk++) {
+      if (typeof item.stats[craftStatKeys[csk]] === 'number') {
+        item.stats[craftStatKeys[csk]] = Math.round(item.stats[craftStatKeys[csk]] * craftBonus * 100) / 100;
+      }
+    }
+  }
+
+  // Procedural mutation roll:
+  // - Drops: 5% base (boss: 8%)
+  // - Crafts: 8% base + scales with craftSkillLevel (up to 18% at skill 50)
+  var _mutSlotHint = null;
+  if (isWeapon) _mutSlotHint = 'weapon';
+  else if (isArmor) _mutSlotHint = 'armor';
+  else if (isJewelry) _mutSlotHint = 'jewelry';
+  var _mutBase;
+  if (source === 'craft') {
+    _mutBase = Math.min(0.08 + craftSkillLevel * 0.002, 0.18);
+  } else {
+    _mutBase = source === 'boss' ? 0.08 : 0.05;
+  }
+  var _itemMut = rollItemMutation(_mutBase, luckBonus, _mutSlotHint);
+  if (_itemMut) applyItemMutation(item, _itemMut);
+
+  // Curse roll: drops in dangerous biomes have higher curse chance, crafts have low base chance
+  var _curseBase = (source === 'craft') ? BIOME_CURSE_CHANCE.crafted : BIOME_CURSE_CHANCE.default;
+  if (options.biome && BIOME_CURSE_CHANCE[options.biome]) _curseBase = BIOME_CURSE_CHANCE[options.biome];
+  // Boss drops bump curse chance slightly (boss enemies carry corruption)
+  if (source === 'boss') _curseBase = Math.max(_curseBase, 0.08);
+  var _itemCurse = rollItemCurse(_curseBase, luckBonus, _mutSlotHint);
+  if (_itemCurse) applyItemCurse(item, _itemCurse);
 
   return item;
 }
@@ -1311,6 +1348,24 @@ var CONSUMABLE_AFFIXES = {
       of_revelry:  { name: 'of Revelry',   effects: { xpBonusPct: 0.05, durationMult: 1.50 }, weight: 6, description: '+5% XP, +50% duration' },
     },
   },
+  food: {
+    prefixes: {
+      hearty:       { name: 'Hearty',       effects: { hpRestoreMult: 1.30 }, weight: 15, description: '+30% HP restore' },
+      savory:       { name: 'Savory',        effects: { buffDurationMult: 1.30 }, weight: 14, description: '+30% buff duration' },
+      spiced:       { name: 'Spiced',        effects: { statBuff: 1 }, weight: 12, description: '+1 to buff stat value' },
+      nourishing:   { name: 'Nourishing',    effects: { hpRegen: 2, regenDuration: 5 }, weight: 10, description: '+2 HP regen for 5 turns' },
+      fortifying:   { name: 'Fortifying',    effects: { defBuff: 3, buffDuration: 3 }, weight: 8, description: '+3 defense for 3 turns' },
+      invigorating: { name: 'Invigorating',  effects: { speedBuff: 0.08, buffDuration: 3 }, weight: 7, description: '+8% speed for 3 turns' },
+    },
+    suffixes: {
+      of_warmth:    { name: 'of Warmth',     effects: { coldResist: 0.15 }, weight: 12, description: '+15% cold resistance' },
+      of_endurance: { name: 'of Endurance',   effects: { staminaRegen: 3 }, weight: 10, description: '+3 stamina regen' },
+      of_sharpness: { name: 'of Sharpness',   effects: { critChance: 0.04 }, weight: 9, description: '+4% crit chance' },
+      of_the_farmer:{ name: 'of the Farmer',  effects: { farmingXpBonus: 0.10 }, weight: 8, description: '+10% farming XP' },
+      of_satiety:   { name: 'of Satiety',     effects: { foodCooldownReduction: 0.20 }, weight: 7, description: '-20% food cooldown' },
+      of_clarity:   { name: 'of Clarity',     effects: { manaRegen: 2 }, weight: 6, description: '+2 mana regen' },
+    },
+  },
 };
 
 // Determine consumable type category
@@ -1321,6 +1376,9 @@ function getConsumableCategory(resourceType) {
   if (resourceType.indexOf('scroll_') === 0 || resourceType.indexOf('rune_stone_') === 0) return 'scrolls';
   if (resourceType === 'ale' || resourceType === 'mead' || resourceType === 'wine' ||
       resourceType === 'spirits' || resourceType === 'fortified_ale' || resourceType === 'battle_brew') return 'brews';
+  var foodTypes = ['cooked_fish', 'bread', 'stew', 'herb_tea', 'grilled_meat', 'berry_jam',
+    'pumpkin_pie', 'corn_bread', 'honey_cake', 'cheese_wheel', 'ancient_fruit_wine'];
+  if (foodTypes.indexOf(resourceType) !== -1) return 'food';
   return null;
 }
 
@@ -1387,6 +1445,7 @@ function generateConsumable(resourceType, displayName, options) {
   var category = getConsumableCategory(resourceType);
   if (!category) return null; // Not a consumable type
 
+  var luckBonus = options.luckBonus || 0;
   var craftSkill = options.craftSkillLevel || 1;
   var quality = rollConsumableQuality(craftSkill);
 
@@ -1433,7 +1492,431 @@ function generateConsumable(resourceType, displayName, options) {
     stackable: false, // procedural consumables don't stack
   };
 
+  // Procedural mutation roll on consumables (4% base, skill + luck scaled)
+  var _cMutHint = (category === 'scrolls') ? 'scroll' : 'consumable';
+  var _cMutBase = Math.min(0.04 + craftSkill * 0.002, 0.15);
+  var _cMut = rollItemMutation(_cMutBase, luckBonus, _cMutHint);
+  if (_cMut) applyItemMutation(item, _cMut);
+
+  // Curse roll on consumables (dangerous ingredients or bad batch)
+  var _cCurseBase = BIOME_CURSE_CHANCE.crafted;
+  if (options.biome && BIOME_CURSE_CHANCE[options.biome]) _cCurseBase = BIOME_CURSE_CHANCE[options.biome];
+  var _cCurse = rollItemCurse(_cCurseBase, luckBonus, _cMutHint);
+  if (_cCurse) applyItemCurse(item, _cCurse);
+
   return item;
+}
+
+// ---------------------------------------------------------------------------
+// Section 12: ITEM MUTATION SYSTEM
+// ---------------------------------------------------------------------------
+// Procedural mutations add unexpected stat/effect flavor to weapons, armor,
+// scrolls, and consumables. Similar to card mutations but adapted for
+// equipment. Triggered at item generation or on craft with luck scaling.
+// ---------------------------------------------------------------------------
+
+// canViral: true means this mutation can spread to adjacent equipped items on equip (luck-scaled)
+var ITEM_MUTATION_POOL = [
+  // ── Tier 1: Minor mutations ──
+  // Weapons
+  { id: 'razor_edge',      name: 'Razor Edge',      tier: 1, weight: 18, slot: ['weapon'],
+    apply: function(s) { s.bleedChance = (s.bleedChance || 0) + 0.07; } },
+  { id: 'weighted_heft',   name: 'Weighted Heft',   tier: 1, weight: 16, slot: ['weapon'],
+    apply: function(s) { s.damage = (s.damage || 0) + 2; } },
+  { id: 'lucky_strike',    name: 'Lucky Strike',    tier: 1, weight: 14, slot: ['weapon'],
+    apply: function(s) { s.critBonus = (s.critBonus || 0) + 0.04; } },
+  { id: 'tempered_mind',   name: 'Tempered Mind',   tier: 1, weight: 15, slot: ['weapon'],
+    apply: function(s) { s.magicDamage = (s.magicDamage || 0) + 2; } },
+  // Armor
+  { id: 'light_step',      name: 'Light Step',      tier: 1, weight: 12, slot: ['armor'],
+    apply: function(s) { s.speedBonus = (s.speedBonus || 0) + 0.03; } },
+  { id: 'iron_skin',       name: 'Iron Skin',       tier: 1, weight: 16, slot: ['armor'],
+    apply: function(s) { s.defense = (s.defense || 0) + 2; } },
+  { id: 'ward_mind',       name: 'Ward Mind',       tier: 1, weight: 14, slot: ['armor'],
+    apply: function(s) { s.magicResist = (s.magicResist || 0) + 3; } },
+  // Jewelry / rings
+  { id: 'fortune_charm',   name: 'Fortune Charm',   tier: 1, weight: 15, slot: ['jewelry'], canViral: true,
+    apply: function(s) { s.luck = (s.luck || 0) + 0.04; s.dropQualityBonus = (s.dropQualityBonus || 0) + 0.03; } },
+  { id: 'swift_thought',   name: 'Swift Thought',   tier: 1, weight: 13, slot: ['jewelry'],
+    apply: function(s) { s.xpGainBonus = (s.xpGainBonus || 0) + 0.05; } },
+  { id: 'merchants_eye',   name: "Merchant's Eye",  tier: 1, weight: 12, slot: ['jewelry'],
+    apply: function(s) { s.presence = (s.presence || 0) + 1; s.tradeBonus = (s.tradeBonus || 0) + 0.03; } },
+  { id: 'steady_resolve',  name: 'Steady Resolve',  tier: 1, weight: 11, slot: ['jewelry'],
+    apply: function(s) { s.resolve = (s.resolve || 0) + 1; s.debuffResist = (s.debuffResist || 0) + 0.05; } },
+  // Consumables / scrolls
+  { id: 'potent_brew',     name: 'Potent Brew',     tier: 1, weight: 15, slot: ['consumable'],
+    apply: function(s) { s.potencyMult = (s.potencyMult || 1.0) + 0.15; } },
+  { id: 'quick_sip',       name: 'Quick Sip',       tier: 1, weight: 12, slot: ['consumable'],
+    apply: function(s) { s.castTime = 0; } },
+  { id: 'scroll_echo',     name: 'Scroll Echo',     tier: 1, weight: 10, slot: ['scroll'],
+    apply: function(s) { s.echoChance = (s.echoChance || 0) + 0.15; } },
+
+  // ── Tier 2: Moderate mutations ──
+  // Weapons
+  { id: 'spark_on_hit',    name: 'Sparking',        tier: 2, weight: 10, slot: ['weapon'], canViral: true,
+    apply: function(s) { s.element = s.element || 'lightning'; s.shockOnHitChance = (s.shockOnHitChance || 0) + 0.12; } },
+  { id: 'drain_strike',    name: 'Draining',        tier: 2, weight: 9,  slot: ['weapon'],
+    apply: function(s) { s.lifeSteal = (s.lifeSteal || 0) + 0.05; s.manaDrain = (s.manaDrain || 0) + 2; } },
+  { id: 'chill_touch',     name: 'Chilling',        tier: 2, weight: 8,  slot: ['weapon'],
+    apply: function(s) { s.element = s.element || 'ice'; s.chillOnHitChance = (s.chillOnHitChance || 0) + 0.18; } },
+  { id: 'poison_coat',     name: 'Venom-Coated',    tier: 2, weight: 9,  slot: ['weapon'],
+    apply: function(s) { s.poisonOnHitChance = (s.poisonOnHitChance || 0) + 0.15; s.poisonDamage = (s.poisonDamage || 0) + 3; } },
+  // Armor
+  { id: 'vital_armor',     name: 'Vital',           tier: 2, weight: 9,  slot: ['armor'], canViral: true,
+    apply: function(s) { s.hpRegen = (s.hpRegen || 0) + 2; } },
+  { id: 'deflect_aura',    name: 'Deflecting',      tier: 2, weight: 7,  slot: ['armor'],
+    apply: function(s) { s.deflectChance = (s.deflectChance || 0) + 0.08; s.thornsDamage = (s.thornsDamage || 0) + 3; } },
+  // Jewelry / rings
+  { id: 'mana_coil',       name: 'Mana Coil',       tier: 2, weight: 9,  slot: ['jewelry'], canViral: true,
+    apply: function(s) { s.manaRegen = (s.manaRegen || 0) + 2; s.spellCostReduction = (s.spellCostReduction || 0) + 0.06; } },
+  { id: 'soul_catch',      name: 'Soul Catch',      tier: 2, weight: 8,  slot: ['jewelry'],
+    apply: function(s) { s.hpOnKill = (s.hpOnKill || 0) + 4; } },
+  { id: 'lucky_ward',      name: 'Lucky Ward',      tier: 2, weight: 7,  slot: ['jewelry'], canViral: true,
+    apply: function(s) { s.luck = (s.luck || 0) + 0.08; s.negateDebuffChance = (s.negateDebuffChance || 0) + 0.10; } },
+  { id: 'kinetic_band',    name: 'Kinetic Band',    tier: 2, weight: 6,  slot: ['jewelry'],
+    apply: function(s) { s.speedBonus = (s.speedBonus || 0) + 0.06; s.staminaRegen = (s.staminaRegen || 0) + 2; } },
+  // Scrolls / consumables
+  { id: 'binding_scroll',  name: 'Binding',         tier: 2, weight: 8,  slot: ['scroll'],
+    apply: function(s) { s.durationBonus = (s.durationBonus || 0) + 2; } },
+  { id: 'twin_cast',       name: 'Twin-Cast',       tier: 2, weight: 6,  slot: ['scroll'],
+    apply: function(s) { s.twinCastChance = (s.twinCastChance || 0) + 0.20; } },
+  { id: 'fortifying_brew', name: 'Fortifying',      tier: 2, weight: 8,  slot: ['consumable'],
+    apply: function(s) { s.tempDefense = (s.tempDefense || 0) + 6; s.buffDuration = (s.buffDuration || 2) + 1; } },
+
+  // ── Tier 3: Major mutations (rare, powerful unique effects) ──
+  // Weapons
+  { id: 'soulbane',        name: 'Soulbane',        tier: 3, weight: 4,  slot: ['weapon'], canViral: true,
+    apply: function(s) { s.soulbane = true; s.bonusVsUndead = (s.bonusVsUndead || 0) + 0.30; s.damage = (s.damage || 0) + 5; } },
+  { id: 'stormcaller',     name: 'Stormcaller',     tier: 3, weight: 3,  slot: ['weapon'],
+    apply: function(s) { s.element = 'lightning'; s.aoeOnCritChance = (s.aoeOnCritChance || 0) + 0.25; s.elementDamage = (s.elementDamage || 0) + 8; } },
+  { id: 'voidheart',       name: 'Voidheart',       tier: 3, weight: 3,  slot: ['weapon', 'armor', 'jewelry'], canViral: true,
+    apply: function(s) { s.element = s.element || 'shadow'; s.voidShredChance = (s.voidShredChance || 0) + 0.15; s.damageBonus = (s.damageBonus || 0) + 0.12; } },
+  // Armor
+  { id: 'lifebound',       name: 'Lifebound',       tier: 3, weight: 4,  slot: ['armor'], canViral: true,
+    apply: function(s) { s.hpRegen = (s.hpRegen || 0) + 4; s.lifeStealAura = (s.lifeStealAura || 0) + 0.04; } },
+  { id: 'arcane_vessel',   name: 'Arcane Vessel',   tier: 3, weight: 3,  slot: ['armor'],
+    apply: function(s) { s.manaRegen = (s.manaRegen || 0) + 3; s.spellCostReduction = (s.spellCostReduction || 0) + 0.12; } },
+  // Jewelry / rings — most powerful jewelry mutations
+  { id: 'fortune_ward',    name: 'Fortune Ward',    tier: 3, weight: 4,  slot: ['jewelry'], canViral: true,
+    apply: function(s) { s.luck = (s.luck || 0) + 0.15; s.deathNegate = true; s.deathNegateRecharge = 86400; } },
+  { id: 'soul_bond',       name: 'Soul Bond',       tier: 3, weight: 3,  slot: ['jewelry'],
+    apply: function(s) { s.allStats = (s.allStats || 0) + 1; s.xpGainBonus = (s.xpGainBonus || 0) + 0.10; s.soulBound = true; } },
+  { id: 'aurora_ring',     name: 'Aurora Ring',     tier: 3, weight: 3,  slot: ['jewelry'], canViral: true,
+    apply: function(s) { s.randomElementProc = true; s.elementDamage = (s.elementDamage || 0) + 5; s.luck = (s.luck || 0) + 0.10; } },
+  { id: 'void_sigil',      name: 'Void Sigil',      tier: 3, weight: 2,  slot: ['jewelry'],
+    apply: function(s) { s.element = 'shadow'; s.damageBonus = (s.damageBonus || 0) + 0.15; s.voidSigilActive = true; } },
+  // Scrolls / consumables
+  { id: 'miracle_brew',    name: 'Miraculous',      tier: 3, weight: 3,  slot: ['consumable'],
+    apply: function(s) { s.potencyMult = (s.potencyMult || 1.0) + 0.50; s.noConsume = true; } },
+  { id: 'grand_inscription',name: 'Grand',          tier: 3, weight: 3,  slot: ['scroll'],
+    apply: function(s) { s.effectMult = (s.effectMult || 1.0) + 0.40; s.noConsume = true; } },
+
+  // ── Wild mutations: true outliers. weight:1, wild:true (~1% of triggered pool) ──
+  { id: 'wild_sentient',    name: 'Sentient',        tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: 'The weapon has opinions. +1 detection range. 10% chance to auto-parry first attack per encounter.',
+    apply: function(s) { s.sentient = true; s.preEmptiveParry = 0.10; s.detectionRange = (s.detectionRange || 0) + 1; } },
+  { id: 'wild_temporal',    name: 'Temporal Memory', tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: 'Remembers its last kill type. +20% damage vs that specific enemy type. Resets on each different kill.',
+    apply: function(s) { s.temporalMemory = true; s.killTypeBonus = 0.20; } },
+  { id: 'wild_gravitational', name: 'Gravitational', tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor', 'jewelry'],
+    description: 'After kills, pulls loose items and coins within 4 tiles toward player automatically.',
+    apply: function(s) { s.gravitationalPull = true; s.pullRange = 4; } },
+  { id: 'wild_spectral_bypass', name: 'Spectral Bypass', tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: 'Hits stealthed/invisible enemies as if fully visible. 20% chance to pierce through thin walls.',
+    apply: function(s) { s.hitsStealthed = true; s.wallPierceChance = 0.20; } },
+  { id: 'wild_hollow_core', name: 'Hollow Core',    tier: 3, weight: 1, wild: true, slot: ['armor', 'jewelry'],
+    description: 'Supernaturally weightless. No carry penalty, no speed reduction. Something used to live inside it.',
+    apply: function(s) { s.weightless = true; s.noSpeedPenalty = true; s.speedBonus = (s.speedBonus || 0) + 0.04; } },
+  { id: 'wild_singing',     name: 'Singing Steel',  tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor'],
+    description: 'Emits tones near traps and hidden doors. Passive trap detection within 3 tiles. Hidden door sense.',
+    apply: function(s) { s.trapDetection = true; s.trapDetectionRange = 3; s.hiddenDoorSense = true; } },
+  { id: 'wild_blood_covenant', name: 'Blood Covenant', tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: 'Soul-binds to first wielder. Grows with kills: +0.3% primary stat per 10 kills. Death resets all growth.',
+    apply: function(s) { s.soulBound = true; s.killGrowthPrimary = 0.003; s.deathResetGrowth = true; } },
+  { id: 'wild_chromatic',   name: 'Chromatic Cycle', tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: 'Rotates through all 6 elements every 8 kills. Item glows its current element color.',
+    apply: function(s) { s.chromaticCycle = true; s.cycleKills = 8; s.elementDamage = (s.elementDamage || 0) + 4; } },
+  { id: 'wild_history',     name: 'History Carved',  tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor'],
+    description: 'Each unique enemy type killed adds an inscription. After 50 types: +1% damage per 5 unique types thereafter.',
+    apply: function(s) { s.historyCarved = true; s.killDiversityBonus = true; s.bonusPerFiveTypes = 0.01; } },
+  { id: 'wild_starfall',    name: 'Starfall Binding', tier: 3, weight: 1, wild: true, slot: ['jewelry'],
+    description: 'Cannot be stolen, pickpocketed, or forcibly removed. If somehow lost, returns after 30 minutes.',
+    apply: function(s) { s.stealImmune = true; s.pickpocketImmune = true; s.returnAfterLoss = 1800; s.destroyCurseImmune = true; } },
+];
+
+/**
+ * Roll for an item mutation based on chance + luck scaling.
+ * luckBonus: 0-based float (0.10 = 10% extra luck)
+ * Returns a mutation object or null.
+ * Tier access: luck >= 0.10 unlocks tier 2, luck >= 0.30 unlocks tier 3.
+ */
+function rollItemMutation(baseChance, luckBonus, itemSlotHint) {
+  luckBonus = luckBonus || 0;
+  var finalChance = Math.min(baseChance * (1 + luckBonus * 3), 0.50);
+  if (Math.random() >= finalChance) return null;
+
+  // Determine max tier accessible
+  var maxTier = 1;
+  if (luckBonus >= 0.30) maxTier = 3;
+  else if (luckBonus >= 0.10) maxTier = 2;
+
+  // Filter pool by max tier and slot hint
+  var candidates = [];
+  var totalWeight = 0;
+  for (var i = 0; i < ITEM_MUTATION_POOL.length; i++) {
+    var m = ITEM_MUTATION_POOL[i];
+    if (m.tier > maxTier) continue;
+    // Slot matching: if itemSlotHint provided, filter to matching slot types
+    if (itemSlotHint && m.slot && m.slot.indexOf(itemSlotHint) === -1) continue;
+    candidates.push(m);
+    totalWeight += m.weight;
+  }
+  if (candidates.length === 0) return null;
+
+  var roll = Math.random() * totalWeight;
+  var cum = 0;
+  for (var j = 0; j < candidates.length; j++) {
+    cum += candidates[j].weight;
+    if (roll <= cum) return candidates[j];
+  }
+  return candidates[candidates.length - 1];
+}
+
+/**
+ * Apply an item mutation to an item's stats object.
+ * Tracks mutation in item.mutations array for display/reference.
+ */
+function applyItemMutation(item, mutation) {
+  if (!item || !mutation) return;
+  if (!item.stats) item.stats = {};
+  if (!item.mutations) item.mutations = [];
+  mutation.apply(item.stats);
+  item.mutations.push({ id: mutation.id, name: mutation.name, tier: mutation.tier });
+  // Prepend mutation name to item name for flavor
+  item.name = '[' + mutation.name + '] ' + item.name;
+}
+
+/**
+ * Attempt viral spread of a mutated item's mutation to adjacent equipped items.
+ * Called when a mutated item is equipped (from gear equip handler).
+ * sourceItem: the newly equipped item with mutations[]
+ * otherEquippedItems: array of other currently equipped item objects
+ * luckBonus: player's total luck bonus float
+ * Returns array of { item, mutation } spread results.
+ */
+function spreadItemViralMutation(sourceItem, otherEquippedItems, luckBonus) {
+  if (!sourceItem || !sourceItem.mutations || sourceItem.mutations.length === 0) return [];
+  if (!otherEquippedItems || otherEquippedItems.length === 0) return [];
+
+  // Only viral-capable mutations can spread
+  var viralSource = null;
+  for (var mi = 0; mi < sourceItem.mutations.length; mi++) {
+    var mut = sourceItem.mutations[mi];
+    // Find full mutation definition to check canViral
+    for (var pi = 0; pi < ITEM_MUTATION_POOL.length; pi++) {
+      if (ITEM_MUTATION_POOL[pi].id === mut.id && ITEM_MUTATION_POOL[pi].canViral) {
+        viralSource = ITEM_MUTATION_POOL[pi];
+        break;
+      }
+    }
+    if (viralSource) break;
+  }
+  if (!viralSource) return [];
+
+  // Spread chance: 15% base + luck-scaled, capped at 40%
+  var luckB = luckBonus || 0;
+  var spreadChance = Math.min(0.15 * (1 + luckB * 3), 0.40);
+
+  var spreadResults = [];
+  for (var ei = 0; ei < otherEquippedItems.length; ei++) {
+    var target = otherEquippedItems[ei];
+    if (!target || !target.stats) continue;
+    if (Math.random() >= spreadChance) continue;
+
+    // Spread a tier-1 mutation appropriate to the target's slot type
+    var tSlot = null;
+    if (target.slot === 'weapon' || target.slot === 'shield') tSlot = 'weapon';
+    else if (['head','chest','undershirt','arms','hands','legs','feet'].indexOf(target.slot) !== -1) tSlot = 'armor';
+    else if (['ring1','ring2','necklace'].indexOf(target.slot) !== -1) tSlot = 'jewelry';
+    var spreadMut = rollItemMutation(1.0, 0, tSlot); // always rolls if we reach here
+    if (!spreadMut || spreadMut.tier > 2) continue; // viral spreads max tier 2
+    var spreadMutCopy = JSON.parse(JSON.stringify({ id: spreadMut.id, name: spreadMut.name, tier: spreadMut.tier }));
+    spreadMutCopy.viral = true;
+    if (!target.mutations) target.mutations = [];
+    spreadMut.apply(target.stats);
+    target.mutations.push(spreadMutCopy);
+    target.name = '[' + spreadMut.name + '] ' + target.name;
+    spreadResults.push({ item: target, mutation: spreadMutCopy });
+  }
+  return spreadResults;
+}
+
+// ---------------------------------------------------------------------------
+// Section 13: CURSE SYSTEM
+// ---------------------------------------------------------------------------
+// Curses are negative procedural effects on items, equipment, scrolls, and
+// consumables. Similar structure to mutations but always bad. They can be
+// cleansed with purification scrolls or alchemy. Curse chance is biome/source
+// dependent and inversely luck-scaled (more luck = fewer curses).
+// ---------------------------------------------------------------------------
+
+var ITEM_CURSE_POOL = [
+  // ── Tier 1: Minor curses (annoying but manageable) ──
+  { id: 'brittle',         name: 'Brittle',         tier: 1, weight: 18, slot: ['weapon', 'armor'],
+    apply: function(s) { s.durabilityPenalty = (s.durabilityPenalty || 0) + 0.20; } },
+  { id: 'sluggish',        name: 'Sluggish',         tier: 1, weight: 16, slot: ['armor', 'jewelry'],
+    apply: function(s) { s.speedBonus = (s.speedBonus || 0) - 0.05; } },
+  { id: 'mana_drain',      name: 'Mana Drain',       tier: 1, weight: 14, slot: ['weapon', 'jewelry'],
+    apply: function(s) { s.manaRegen = (s.manaRegen || 0) - 1; } },
+  { id: 'clumsy',          name: 'Clumsy',           tier: 1, weight: 15, slot: ['weapon', 'armor'],
+    apply: function(s) { s.critBonus = (s.critBonus || 0) - 0.04; } },
+  { id: 'tarnished',       name: 'Tarnished',        tier: 1, weight: 14, slot: ['jewelry'],
+    apply: function(s) { s.presence = (s.presence || 0) - 1; s.luck = (s.luck || 0) - 0.03; } },
+  { id: 'unstable_brew',   name: 'Unstable',         tier: 1, weight: 15, slot: ['consumable'],
+    apply: function(s) { s.potencyMult = (s.potencyMult || 1.0) - 0.15; s.selfDamageChance = (s.selfDamageChance || 0) + 0.05; } },
+  { id: 'fading_ink',      name: 'Fading',           tier: 1, weight: 13, slot: ['scroll'],
+    apply: function(s) { s.effectMult = (s.effectMult || 1.0) - 0.15; } },
+
+  // ── Tier 2: Moderate curses (impactful, worth cleansing) ──
+  { id: 'bleeding_edge',   name: 'Self-Bleed',       tier: 2, weight: 10, slot: ['weapon'],
+    apply: function(s) { s.selfBleedChance = (s.selfBleedChance || 0) + 0.10; s.damage = (s.damage || 0) - 1; } },
+  { id: 'weight_of_sin',   name: 'Weight of Sin',    tier: 2, weight: 9,  slot: ['armor'],
+    apply: function(s) { s.speedBonus = (s.speedBonus || 0) - 0.10; s.staminaDrain = (s.staminaDrain || 0) + 2; } },
+  { id: 'hexed',           name: 'Hexed',            tier: 2, weight: 8,  slot: ['jewelry', 'armor'],
+    apply: function(s) { s.debuffResist = (s.debuffResist || 0) - 0.15; s.negativeStatusChance = (s.negativeStatusChance || 0) + 0.08; } },
+  { id: 'enervating',      name: 'Enervating',       tier: 2, weight: 7,  slot: ['jewelry'],
+    apply: function(s) { s.xpGainBonus = (s.xpGainBonus || 0) - 0.10; } },
+  { id: 'corrupted_brew',  name: 'Corrupted',        tier: 2, weight: 7,  slot: ['consumable'],
+    apply: function(s) { s.potencyMult = (s.potencyMult || 1.0) - 0.25; s.poisonOnUseChance = (s.poisonOnUseChance || 0) + 0.20; } },
+
+  // ── Tier 3: Major curses (severe, biome-flavored, must cleanse) ──
+  { id: 'rift_taint',      name: 'Rift-Tainted',     tier: 3, weight: 4,  slot: ['weapon', 'armor', 'jewelry'],
+    apply: function(s) { s.riftTainted = true; s.defense = (s.defense || 0) - 4; s.magicResist = (s.magicResist || 0) - 5; s.riftEntitiesAggroBonus = 0.25; } },
+  { id: 'soul_siphon',     name: 'Soul Siphon',      tier: 3, weight: 3,  slot: ['weapon', 'jewelry'],
+    apply: function(s) { s.soulSiphon = true; s.hpOnAttackDrain = (s.hpOnAttackDrain || 0) + 3; s.damage = (s.damage || 0) + 3; } },
+  { id: 'death_brand',     name: 'Death Brand',      tier: 3, weight: 2,  slot: ['armor', 'jewelry'],
+    apply: function(s) { s.deathBrand = true; s.deathPenaltyMult = (s.deathPenaltyMult || 1.0) + 0.50; } },
+  { id: 'hollowing',       name: 'Hollowing',        tier: 3, weight: 3,  slot: ['weapon', 'armor', 'jewelry'],
+    apply: function(s) { s.hollowing = true; s.allStats = (s.allStats || 0) - 1; s.evoXpPenalty = 0.25; } },
+
+  // ── Wild curses: true outliers. weight:1, wild:true (~1% of triggered pool) ──
+  { id: 'wild_curse_contrarian', name: 'Contrarian Spirit', tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: '6% chance per attack to silently do zero damage. The item simply refuses. It has opinions.',
+    apply: function(s) { s.contrarian = true; s.selfNullChance = 0.06; } },
+  { id: 'wild_curse_magnetic', name: 'Magnetic Jinx',     tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor', 'jewelry'],
+    description: 'All traps within 5 tiles permanently trigger toward the player. +15% ambush spawn rate.',
+    apply: function(s) { s.trapAttractionRange = 5; s.ambushSpawnBonus = 0.15; } },
+  { id: 'wild_curse_debt',    name: 'The Debt Collector', tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor'],
+    description: 'Every 10 kills, 7 coins vanish from the wallet silently. Going broke halves the item\'s stats.',
+    apply: function(s) { s.killDebtInterval = 10; s.killDebtAmount = 7; s.bankruptPenalty = 0.50; } },
+  { id: 'wild_curse_hollow',  name: 'Hollow Victory',     tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: 'On killing blows, 40% of kill XP is stolen and given to the nearest living enemy. Kills feel hollow.',
+    apply: function(s) { s.hollowVictory = true; s.killXpSiphon = 0.40; } },
+  { id: 'wild_curse_inverse', name: 'Inverse Ward',       tier: 3, weight: 1, wild: true, slot: ['armor', 'jewelry'],
+    description: 'Magic resistance applies equally to your own outgoing spells. Your defenses don\'t know friend from foe.',
+    apply: function(s) { s.inverseWard = true; s.selfMagicResistPenalty = true; } },
+  { id: 'wild_curse_phase',   name: 'Phase Sickness',     tier: 3, weight: 1, wild: true, slot: ['armor', 'jewelry'],
+    description: 'After any teleport (portal, descent, fast travel), item loses all stats for exactly 13 seconds.',
+    apply: function(s) { s.phaseSickness = true; s.teleportDebuffSeconds = 13; } },
+  { id: 'wild_curse_jealous', name: 'Jealous Craft',      tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor'],
+    description: 'Slowly degrades if any other item in its slot category is also equipped. -1 durability/hour with a rival equipped.',
+    apply: function(s) { s.jealousCraft = true; s.rivalDurabilityDrain = 1; } },
+  { id: 'wild_curse_truename', name: 'The True Name',     tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor', 'jewelry'],
+    description: 'Brands the wielder with a unique death name. On every death, the name is announced to nearby players.',
+    apply: function(s) { s.trueName = true; s.deathAnnounce = true; } },
+  { id: 'wild_curse_wrong_hand', name: 'Wrong-Handed',    tier: 3, weight: 1, wild: true, slot: ['weapon'],
+    description: 'All combat bonuses take a 20% penalty in the dominant hand. Must wield off-hand for full stats.',
+    apply: function(s) { s.wrongHanded = true; s.dominantHandPenalty = 0.20; } },
+  { id: 'wild_curse_parasite', name: 'Symbiotic Parasite', tier: 3, weight: 1, wild: true, slot: ['weapon', 'armor'],
+    description: 'Drains -1 to all stats from the equipped ring per hour to power itself. Gains +0.01% primary stat per point drained.',
+    apply: function(s) { s.symbioticParasite = true; s.jewelryDrainPerHour = 1; s.growthPerDrainPoint = 0.0001; } },
+];
+
+// Biome curse chance modifiers — dangerous biomes have higher base curse chance
+var BIOME_CURSE_CHANCE = {
+  rift:            0.25,  // highest — Rift is corrupted space
+  deep_cave:       0.18,
+  undead_crypt:    0.20,
+  shadow_realm:    0.22,
+  cursed_swamp:    0.16,
+  corrupted_forest:0.14,
+  default:         0.04,  // normal biome / crafted without dangerous materials
+  crafted:         0.03,  // craft base chance (low)
+};
+
+/**
+ * Roll for an item curse. Higher luck = lower curse chance.
+ * baseChance: override (or use BIOME_CURSE_CHANCE defaults)
+ * luckBonus: subtracts from curse chance (luck protects against curses)
+ */
+function rollItemCurse(baseChance, luckBonus, itemSlotHint) {
+  luckBonus = luckBonus || 0;
+  // Luck reduces curse chance: each 0.10 luck reduces chance by 20%
+  var curseMult = Math.max(0.1, 1 - luckBonus * 2);
+  var finalChance = Math.min(baseChance * curseMult, 0.45);
+  if (Math.random() >= finalChance) return null;
+
+  // Higher luck also limits curse tier (luck >= 0.15 prevents tier 3 curses)
+  var maxTier = 3;
+  if (luckBonus >= 0.15) maxTier = 2;
+  if (luckBonus >= 0.30) maxTier = 1;
+
+  var candidates = [];
+  var totalWeight = 0;
+  for (var i = 0; i < ITEM_CURSE_POOL.length; i++) {
+    var c = ITEM_CURSE_POOL[i];
+    if (c.tier > maxTier) continue;
+    if (itemSlotHint && c.slot && c.slot.indexOf(itemSlotHint) === -1) continue;
+    candidates.push(c);
+    totalWeight += c.weight;
+  }
+  if (candidates.length === 0) return null;
+
+  var roll = Math.random() * totalWeight;
+  var cum = 0;
+  for (var j = 0; j < candidates.length; j++) {
+    cum += candidates[j].weight;
+    if (roll <= cum) return candidates[j];
+  }
+  return candidates[candidates.length - 1];
+}
+
+/**
+ * Apply a curse to an item's stats. Tracks in item.curses[].
+ * Curses can be removed by cleansing (set curse.cleansable = true by default).
+ */
+function applyItemCurse(item, curse) {
+  if (!item || !curse) return;
+  if (!item.stats) item.stats = {};
+  if (!item.curses) item.curses = [];
+  curse.apply(item.stats);
+  item.curses.push({ id: curse.id, name: curse.name, tier: curse.tier, cleansable: true });
+  // Append curse flavor to name
+  item.name = item.name + ' [Cursed: ' + curse.name + ']';
+  item.isCursed = true;
+}
+
+/**
+ * Cleanse a specific curse from an item (requires purification scroll or alchemy).
+ * Returns true if curse was found and removed.
+ */
+function cleanseItemCurse(item, curseId) {
+  if (!item || !item.curses) return false;
+  var idx = -1;
+  for (var i = 0; i < item.curses.length; i++) {
+    if (item.curses[i].id === curseId && item.curses[i].cleansable) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx === -1) return false;
+  item.curses.splice(idx, 1);
+  if (item.curses.length === 0) {
+    item.isCursed = false;
+    // Strip curse flavor from name (simple prefix strip)
+    item.name = item.name.replace(/ \[Cursed: [^\]]+\]/g, '');
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1491,4 +1974,15 @@ module.exports = {
   CONSUMABLE_AFFIXES: CONSUMABLE_AFFIXES,
   generateConsumable: generateConsumable,
   getConsumableCategory: getConsumableCategory,
+  // Item mutation system
+  ITEM_MUTATION_POOL: ITEM_MUTATION_POOL,
+  rollItemMutation: rollItemMutation,
+  applyItemMutation: applyItemMutation,
+  spreadItemViralMutation: spreadItemViralMutation,
+  // Curse system
+  ITEM_CURSE_POOL: ITEM_CURSE_POOL,
+  BIOME_CURSE_CHANCE: BIOME_CURSE_CHANCE,
+  rollItemCurse: rollItemCurse,
+  applyItemCurse: applyItemCurse,
+  cleanseItemCurse: cleanseItemCurse,
 };

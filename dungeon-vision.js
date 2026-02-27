@@ -1134,6 +1134,17 @@ function filterFloorStateForPlayer(floor, visibility, fogMemory, width, playerVi
     }
   }
 
+  // Corpses: show on visible or remembered tiles (like chests)
+  var visibleCorpses = [];
+  var corpses = floor.corpses || [];
+  for (var cri = 0; cri < corpses.length; cri++) {
+    var cr = corpses[cri];
+    var crIdx = cr.y * width + cr.x;
+    if (fogMemory[crIdx] >= FOG_STATE.REMEMBERED) {
+      visibleCorpses.push({ x: cr.x, y: cr.y, id: cr.id, name: cr.name, description: cr.description, examined: cr.examined });
+    }
+  }
+
   // Camps: show on visible or remembered tiles
   var visibleCamps = [];
   var camps = floor.camps || [];
@@ -1150,6 +1161,7 @@ function filterFloorStateForPlayer(floor, visibility, fogMemory, width, playerVi
     chests: visibleChests,
     npcs: visibleNpcs,
     traps: visibleTraps,
+    corpses: visibleCorpses,
     camps: visibleCamps,
     thermalEntities: visibility.thermalEntities,
     tremorIndicators: visibility.tremorIndicators,

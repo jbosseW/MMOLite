@@ -29,59 +29,45 @@ var crypto = require('crypto');
 
 var CARD_SHOP_INVENTORY = [
   // ── Stat Boosts (Common) — let players try different stat builds ──
-  'vigor_I',       // +1 Vigor
-  'might_I',       // +1 Might
-  'finesse_I',     // +1 Finesse
-  'acumen_I',      // +1 Acumen
-  'resolve_I',     // +1 Resolve
-  'presence_I',    // +1 Presence
-  'ingenuity_I',   // +1 Ingenuity
+  'vigor',         // +1 Vigor
+  'might',         // +1 Might
+  'finesse',       // +1 Finesse
+  'acumen',        // +1 Acumen
+  'resolve',       // +1 Resolve
+  'presence',      // +1 Presence
+  'ingenuity',     // +1 Ingenuity
 
-  // ── Stat Boosts (Uncommon) — stronger variants ──
-  'vigor_II',      // +2 Vigor
-  'might_II',      // +2 Might
-  'finesse_II',    // +2 Finesse
-  'acumen_II',     // +2 Acumen
-  'resolve_II',    // +2 Resolve
-  'presence_II',   // +2 Presence
-  'ingenuity_II',  // +2 Ingenuity
-
-  // ── Skill XP Boosts (Common) — gathering/crafting ──
-  'mining_xp_I',       // +10% Mining XP
-  'woodcutting_xp_I',  // +10% Woodcutting XP
-  'farming_xp_I',      // +10% Farming XP
-  'fishing_xp_I',      // +10% Fishing XP
-  'melee_xp_I',        // +10% Melee XP
-  'cooking_xp_I',      // +10% Cooking XP
-  'cogworking_xp_I',   // +10% Cogworking XP
-  'alchemy_xp_I',      // +10% Alchemy XP
-  'enchanting_xp_I',   // +10% Enchanting XP
-  'crafting_xp_I',     // +10% Crafting XP
-
-  // ── Skill XP Boosts (Uncommon) — stronger variants ──
-  'mining_xp_II',      // +20% Mining XP
-  'magic_xp_I',        // +10% Magic XP (uncommon)
-  'cooking_xp_II',     // +20% Cooking XP
-  'alchemy_xp_II',     // +20% Alchemy XP
-  'crafting_xp_II',    // +20% Crafting XP
+  // ── Skill XP Boosts (Common) — gathering/crafting/combat ──
+  'mining_xp',         // +10% Mining XP
+  'woodcutting_xp',    // +10% Woodcutting XP
+  'farming_xp',        // +10% Farming XP
+  'fishing_xp',        // +10% Fishing XP
+  'melee_xp',          // +10% Melee XP
+  'cooking_xp',        // +10% Cooking XP
+  'cogworking_xp',     // +10% Cogworking XP
+  'alchemy_xp',        // +10% Alchemy XP
+  'enchanting_xp',     // +10% Enchanting XP
+  'crafting_xp',       // +10% Crafting XP
 
   // ── Passive Perks (Common) — utility ──
-  'speed_boost_I',     // +5% Movement Speed
-  'carry_weight_I',    // +20 Carry Weight
-  'lucky_coin',        // +5% Luck
+  'speed_boost',       // +5% Movement Speed
+  'carry_weight',      // +20 Carry Weight
+  'thorns',            // 15% damage reflect
+  'sprint_stamina',    // +15% max sprint stamina
+
+  // ── Skill XP Boosts (Uncommon) ──
+  'magic_xp',          // +10% Magic XP
+  'crafting_xp_all',   // +10% All Crafting XP
 
   // ── Passive Perks (Uncommon) — combat/utility ──
-  'speed_boost_II',    // +10% Movement Speed
-  'hp_regen_I',        // HP Regen +1/s
-  'crit_boost_I',      // +3% Crit Chance
-  'dodge_boost_I',     // +3% Dodge
-  'magic_resist_I',    // +5% Magic Resist
-  'shadow_cloak',      // +10% Stealth
+  'hp_regen',          // HP Regen +3/s
+  'crit_boost',        // +3% Crit Chance
+  'dodge_boost',       // +3% Dodge
+  'magic_resist',      // +5% Magic Resist
   'lockmaster',        // +15% Lockpicking
-  'fortune_favor',     // Fortune's Favor (luck + crit)
   'treasure_sense',    // Loot & rare resource bonus
-  'thorns',            // 15% damage reflect
   'riposte_card',      // Counter strike reactive
+  'sprint_efficiency', // Reduces sprint stamina drain
 
   // ── Active Abilities (Uncommon) — combat starters ──
   'heal_self_I',       // Heal Self I (magic heal)
@@ -90,10 +76,8 @@ var CARD_SHOP_INVENTORY = [
   'taunt',             // Taunt (tank aggro)
   'cleanse',           // Cleanse (remove debuffs)
   'oil_slick',         // Oil Slick (tile control)
-  'bramble_trap',      // Bramble Trap (tile control)
   'shield_bash',       // Shield Bash (tank stun)
   'acid_flask',        // Acid Flask (alchemy damage)
-  'healing_salve',     // Healing Salve (alchemy heal)
 
   // ── Gathering Boosts (Uncommon) ──
   'bountiful_harvest', // +10% gathering bonus

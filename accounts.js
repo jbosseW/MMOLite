@@ -194,6 +194,14 @@ const tempAccounts = new Map();
 // Map<"username_lower:TAG", accountKey>
 const tagIndex = new Map();
 
+// ─── Equipped card effects cache (avoids re-scanning cards on every XP grant) ───
+var _cardEffectsCache = new Map(); // key -> { effects: [...], ts: Date.now() }
+var CARD_EFFECTS_TTL = 15000; // 15 second TTL
+
+function invalidateCardEffectsCache(key) {
+  _cardEffectsCache.delete(key);
+}
+
 // ─── Write-behind cache for async I/O ───
 const accountCache = new Map();
 const CACHE_MAX = 5000;
@@ -385,6 +393,22 @@ const CHARACTER_FIELDS = [
   'knowledge',
   'permadeath',
   'awakenings',
+  // --- New systems ---
+  'karma',
+  'activeBounty',
+  'crimeHistory',
+  'factionRep',
+  'companions',
+  'ascensionCount',
+  'ascensionPoints',
+  'ascensionTree',
+  'ascensionMark',
+  'petData',
+  'activePet',
+  'npcRelationships',
+  'townReputation',
+  'pendingCrafts',
+  'jailState',
 ];
 
 // Returns default value for a character field (mirrors createAccount defaults)
@@ -435,6 +459,23 @@ function _getDefaultForField(field) {
     };
     case 'permadeath': return false;
     case 'awakenings': return [];
+    // --- New systems ---
+    case 'karma': return 0;
+    case 'activeBounty': return null;
+    case 'crimeHistory': return [];
+    case 'factionRep': return {};
+    case 'companions': return [];
+    case 'ascensionCount': return 0;
+    case 'ascensionPoints': return 0;
+    case 'ascensionTree': return {};
+    case 'ascensionMark': return false;
+    case 'petData': return [];
+    case 'activePet': return null;
+    case 'npcRelationships': return {};
+    case 'townReputation': return {};
+    case 'pendingCrafts': return [];
+    case 'jailState':
+      return { inJail: false, crime: null, releasedAt: 0, bail: 0, jailZoneId: null, arrestedAt: 0 };
     default: return null;
   }
 }
@@ -600,14 +641,16 @@ if (ENCRYPTION_KEYS.length > 0) {
 // ─── Startup: pre-populate keyHashMap from all account files ───
 // This allows friend key resolution to work immediately after restart
 // without waiting for each user to log in.
-(function _preloadKeyIndex() {
+// Exported as preloadKeyIndex() so server.js can call it after the server starts listening.
+async function preloadKeyIndex() {
   try {
-    var files = fs.readdirSync(ACCOUNTS_DIR).filter(function(f) { return f.endsWith('.json'); });
+    var allFiles = await fs.promises.readdir(ACCOUNTS_DIR);
+    var files = allFiles.filter(function(f) { return f.endsWith('.json'); });
     var loaded = 0;
     for (var i = 0; i < files.length; i++) {
       var fp = path.join(ACCOUNTS_DIR, files[i]);
       try {
-        var buf = fs.readFileSync(fp);
+        var buf = await fs.promises.readFile(fp);
         var decrypted = _decryptData(buf);
         if (!decrypted) continue;
         var acc = JSON.parse(decrypted);
@@ -624,8 +667,9 @@ if (ENCRYPTION_KEYS.length > 0) {
     if (loaded > 0) console.log('[accounts] Pre-loaded ' + loaded + ' account file(s) for diagnostics');
   } catch (e) {
     // data dir might not exist yet
+    console.log('[accounts] preloadKeyIndex: data dir not ready (' + (e.message || 'unknown error') + ')');
   }
-})();
+}
 
 function generateKey() {
   let key = '';
@@ -1046,8 +1090,8 @@ function getSkill(key, skillName) {
   return account.skills[skillName] || { level: 1, xp: 0 };
 }
 
-function addSkillXp(key, skillName, amount, xpRate) {
-  const account = loadAccount(key);
+function addSkillXp(key, skillName, amount, xpRate, existingAccount) {
+  var account = existingAccount || loadAccount(key);
   if (!account) return null;
   if (!account.skills) account.skills = rpgData.getDefaultSkills();
   if (!account.skills[skillName]) account.skills[skillName] = { level: 1, xp: 0 };
@@ -1073,8 +1117,8 @@ function addSkillXp(key, skillName, amount, xpRate) {
   if (account.rpgStats) {
     xpMultiplier += (account.rpgStats.acumen || 5) * 0.01;
   }
-  // Apply equipped card XP bonuses
-  var cardEffects = getEquippedCardEffects(key);
+  // Apply equipped card XP bonuses (pass account to avoid redundant loadAccount)
+  var cardEffects = getEquippedCardEffects(key, account);
   for (var ci = 0; ci < cardEffects.length; ci++) {
     var cardEff = cardEffects[ci];
     if (cardEff.type === 'xp_bonus_all' && cardEff.value) {
@@ -3415,6 +3459,7 @@ function equipRpgCard(key, cardInstanceId, slotIndex) {
   if (!isActive && passiveCount >= passiveSlots) return { error: 'No passive card slots available (have ' + passiveCount + '/' + passiveSlots + ')' };
 
   account.equippedCards.push(cardInstanceId);
+  _cardEffectsCache.delete(key);
   saveAccount(account);
   return { success: true, equippedCards: account.equippedCards, activeCardSlots: activeSlots, passiveCardSlots: passiveSlots };
 }
@@ -3437,6 +3482,7 @@ function unequipRpgCard(key, cardInstanceId) {
     account.equippedCards.splice(idx, 1);
   }
 
+  _cardEffectsCache.delete(key);
   saveAccount(account);
   return { success: true, equippedCards: account.equippedCards };
 }
@@ -3511,7 +3557,23 @@ function fuseRpgCards(key, card1Id, card2Id) {
     }
   }
 
-  var result = rpgData.fuseCards(card1, card2);
+  // Compute racial bonuses to pass into fusion
+  var _fuseRaceData = account.race && rpgData.RACES && rpgData.RACES[account.race];
+  var _racialFuseBonus = null;
+  if (_fuseRaceData) {
+    var _rLuck = _fuseRaceData.baseLuck || 0;
+    var _rMutBonus = 0;
+    if (_fuseRaceData.racialFeat && _fuseRaceData.racialFeat.effects) {
+      for (var _rfi = 0; _rfi < _fuseRaceData.racialFeat.effects.length; _rfi++) {
+        if (_fuseRaceData.racialFeat.effects[_rfi].type === 'mutation_chance_bonus') {
+          _rMutBonus += (_fuseRaceData.racialFeat.effects[_rfi].value || 0);
+        }
+      }
+    }
+    if (_rLuck > 0 || _rMutBonus > 0) _racialFuseBonus = { luckBonus: _rLuck, mutationChanceBonus: _rMutBonus };
+  }
+
+  var result = rpgData.fuseCards(card1, card2, _racialFuseBonus);
   if (result.error) return result;
 
   // Remove both source cards (remove higher index first to avoid shifting)
@@ -3522,8 +3584,24 @@ function fuseRpgCards(key, card1Id, card2Id) {
   // Add fused card
   account.rpgCards.push(result.card);
 
+  // Viral spread: if fusion produced a mutation, it may spread to equipped cards
+  var fusionViralSpreads = [];
+  if (result.mutation) {
+    var fusionLuck = 0;
+    for (var fi = 0; fi < result.card.effects.length; fi++) {
+      var fe = result.card.effects[fi];
+      if (fe.type === 'luck_bonus' || fe.type === 'card_luck_bonus') fusionLuck += (fe.value || 0);
+    }
+    // Add racial base luck
+    var _fuseRace = account.race && rpgData.RACES && rpgData.RACES[account.race];
+    if (_fuseRace && _fuseRace.baseLuck) fusionLuck += _fuseRace.baseLuck;
+    fusionViralSpreads = _spreadMutation(account, result.card, fusionLuck);
+  }
+
+
+  invalidateCardEffectsCache(key);
   saveAccount(account);
-  return { success: true, newCard: result.card };
+  return { success: true, newCard: result.card, mutation: result.mutation || null, viralSpreads: fusionViralSpreads };
 }
 
 function getRpgCards(key) {
@@ -3536,8 +3614,16 @@ function getRpgCards(key) {
 // RPG: Get equipped card effects (aggregated)
 // ---------------------------------------------------------------------------
 
-function getEquippedCardEffects(key) {
-  var account = loadAccount(key);
+function getEquippedCardEffects(key, existingAccount) {
+  // Check cache first (only when no pre-loaded account provided, since caller may have mutated it)
+  if (!existingAccount) {
+    var cached = _cardEffectsCache.get(key);
+    if (cached && (Date.now() - cached.ts) < CARD_EFFECTS_TTL) {
+      return cached.effects;
+    }
+  }
+
+  var account = existingAccount || loadAccount(key);
   if (!account) return [];
   if (!account.rpgCards || !account.equippedCards) return [];
 
@@ -3560,7 +3646,36 @@ function getEquippedCardEffects(key) {
       }
     }
   }
+
+  // Store in cache
+  _cardEffectsCache.set(key, { effects: effects, ts: Date.now() });
+
   return effects;
+}
+
+// ---------------------------------------------------------------------------
+// RPG: Get aggregated player luck bonus (race + equipped card effects)
+// Returns a float (e.g. 0.15 = 15% luck bonus). Used for mutation rolls.
+// ---------------------------------------------------------------------------
+
+function getPlayerLuck(key) {
+  var account = loadAccount(key);
+  if (!account) return 0;
+  var luck = 0;
+  // Racial base luck
+  var race = account.race && rpgData.RACES && rpgData.RACES[account.race];
+  if (race && race.baseLuck) luck += race.baseLuck;
+  // Equipped card luck effects
+  var effects = getEquippedCardEffects(key, account);
+  for (var i = 0; i < effects.length; i++) {
+    if (effects[i].type === 'luck_bonus' || effects[i].type === 'card_luck_bonus') {
+      luck += (effects[i].value || 0);
+    }
+  }
+  // Ascension: Lucky Star node (+1% rarity bump per rank)
+  var ascTree = account.ascensionTree || {};
+  luck += (ascTree['lucky_star'] || 0) * 0.01;
+  return luck;
 }
 
 // ---------------------------------------------------------------------------
@@ -3746,6 +3861,417 @@ function incrementLeviathanKill(key, leviathanId) {
   return account;
 }
 
+// ---------------------------------------------------------------------------
+// Weight / Encumbrance System
+// ---------------------------------------------------------------------------
+
+var ITEM_WEIGHTS = {
+  // Resources
+  wood: 1, stone: 2, iron_ore: 2, iron_bar: 3,
+  bronze_ore: 2, bronze_bar: 3, fish: 1, cooked_fish: 1,
+  shellfish: 1, seaweed: 0.5, wheat: 0.5, herbs: 0.5,
+  vegetables: 1, mushroom: 0.5, bread: 0.5, stew: 1,
+  glass_sand: 1, glass: 1, glass_lens: 0.5, glass_vial: 0.5,
+  cogs: 1, gears: 1, springs: 0.5, clockwork_core: 2,
+  mana_crystal: 0.5, gem_rough: 1, gem_cut: 0.5,
+  potion_health: 0.5, potion_mana: 0.5,
+  ale: 1, wine: 1, pickled_vegetables: 1, herb_preserves: 1,
+  berry_jam: 1, fruit_jam: 1,
+  // Equipment
+  wooden_sword: 3, wooden_dagger: 2, wooden_mace: 4, wooden_spear: 4,
+  iron_sword: 5, iron_axe: 6, iron_pickaxe: 5,
+  // Structures/placeable (heavy)
+  forge: 30, storage_chest: 15, wall: 10, door: 8, raft: 40, boat: 60,
+  brewery: 50, preserving_station: 30, jam_maker: 20,
+  default: 1,
+};
+
+function getCarryCapacity(account) {
+  var vigor = (account.rpgStats && account.rpgStats.vigor) || 5;
+  var base = 50;
+  var vigBonus = vigor * 5;
+  // Cart/pack animal bonus
+  var cartBonus = 0;
+  if (account.mmoInventory && account.mmoInventory.items) {
+    account.mmoInventory.items.forEach(function(item) {
+      if (item.type === 'cart') cartBonus += 100;
+      if (item.type === 'pack_mule') cartBonus += 100;
+    });
+  }
+  // Ascension bonus
+  var ascTree = account.ascensionTree || {};
+  var ascCarry = (ascTree['hoarders_instinct'] || 0) * 20;
+  return base + vigBonus + cartBonus + ascCarry;
+}
+
+function getCurrentWeight(account) {
+  var inv = account.mmoInventory || {};
+  var weight = 0;
+  // Resources (numeric fields)
+  Object.keys(inv).forEach(function(key) {
+    if (key === 'items') return;
+    var qty = inv[key];
+    if (typeof qty === 'number' && qty > 0) {
+      weight += qty * (ITEM_WEIGHTS[key] || ITEM_WEIGHTS.default);
+    }
+  });
+  // Items (array)
+  if (Array.isArray(inv.items)) {
+    inv.items.forEach(function(item) {
+      weight += (ITEM_WEIGHTS[item.type] || ITEM_WEIGHTS.default);
+    });
+  }
+  return weight;
+}
+
+function getEncumbranceLevel(account) {
+  var cap = getCarryCapacity(account);
+  var cur = getCurrentWeight(account);
+  var pct = cur / cap;
+  if (pct > 1.0) return 'overloaded'; // cannot move
+  if (pct > 0.90) return 'heavy';    // -40% speed
+  if (pct > 0.75) return 'moderate'; // -20% speed
+  return 'normal';
+}
+
+function getSpeedMultiplier(account) {
+  var enc = getEncumbranceLevel(account);
+  var base;
+  if (enc === 'overloaded') return 0;
+  if (enc === 'heavy') base = 0.60;
+  else if (enc === 'moderate') base = 0.80;
+  else base = 1.0;
+  // Ascension: Seasoned Traveler (+3% speed per rank)
+  var ascTree = account.ascensionTree || {};
+  var ascSpeed = (ascTree['seasoned_traveler'] || 0) * 0.03;
+  return base * (1 + ascSpeed);
+}
+
+// ---------------------------------------------------------------------------
+// Viral Mutation Spread
+// When a mutation fires on any card, there is a luck-scaled chance it "goes
+// viral" and spreads a minor mutation to each other equipped card.
+// Spread chance per target card = base 15%, scaled by accumulated luck.
+// Spread mutations are always tier ≤ 2 and tagged viral:true.
+// ---------------------------------------------------------------------------
+function _spreadMutation(account, sourceCard, luckBonus) {
+  if (!account || !account.equippedCards || !account.rpgCards) return [];
+
+  // Build card lookup map
+  var cardMap = {};
+  for (var i = 0; i < account.rpgCards.length; i++) {
+    cardMap[account.rpgCards[i].instanceId] = account.rpgCards[i];
+  }
+
+  // Racial viral_spread_bonus (catfolk: +10%)
+  var spreadBase = 0.15;
+  var _spreadRace = account.race && rpgData.RACES && rpgData.RACES[account.race];
+  if (_spreadRace && _spreadRace.racialFeat && _spreadRace.racialFeat.effects) {
+    for (var _sri = 0; _sri < _spreadRace.racialFeat.effects.length; _sri++) {
+      if (_spreadRace.racialFeat.effects[_sri].type === 'viral_spread_bonus') {
+        spreadBase += (_spreadRace.racialFeat.effects[_sri].value || 0);
+      }
+    }
+  }
+  // Affix: viral_spread_speed — boost viral spread chance from source card
+  if (sourceCard.affixes && Array.isArray(sourceCard.affixes)) {
+    for (var _vsi = 0; _vsi < sourceCard.affixes.length; _vsi++) {
+      if (sourceCard.affixes[_vsi] && sourceCard.affixes[_vsi].effect && sourceCard.affixes[_vsi].effect.type === 'viral_spread_speed') {
+        spreadBase += (sourceCard.affixes[_vsi].effect.value || 0);
+      }
+    }
+  }
+
+  var spreadResults = [];
+  for (var e = 0; e < account.equippedCards.length; e++) {
+    var eId = account.equippedCards[e];
+    if (!eId || eId === sourceCard.instanceId) continue;
+    var target = cardMap[eId];
+    if (!target) continue;
+
+    // Luck-proc spread: spreadBase% base (race-adjusted), luck-scaled
+    var viralMut = rpgData.rollMutation(spreadBase, luckBonus);
+    if (!viralMut) continue;
+    // Viral spreads are capped at tier 2 (no tier 3 via viral)
+    if (viralMut.tier > 2) continue;
+    viralMut.viral = true;
+    rpgData.applyMutation(target, viralMut);
+    spreadResults.push({ instanceId: eId, mutation: viralMut });
+  }
+  return spreadResults;
+}
+
+// ---------------------------------------------------------------------------
+// Card Evolution System
+// ---------------------------------------------------------------------------
+
+// Internal: advance a single card's evolution XP on a pre-loaded account (no save).
+// Returns a result object if the card advanced a stage, or null otherwise.
+// Pick a guaranteed tier-1 mutation from MUTATION_POOL (for post-max level bonuses)
+function _forceTier1Mutation(luck) {
+  var pool = [];
+  var totalWeight = 0;
+  var mutPool = rpgData.MUTATION_POOL;
+  if (!mutPool) return null;
+  for (var mi = 0; mi < mutPool.length; mi++) {
+    if (mutPool[mi].tier === 1) {
+      pool.push(mutPool[mi]);
+      totalWeight += (mutPool[mi].weight || 1);
+    }
+  }
+  if (pool.length === 0) return null;
+  var roll = Math.random() * totalWeight;
+  var cumulative = 0;
+  for (var pi = 0; pi < pool.length; pi++) {
+    cumulative += (pool[pi].weight || 1);
+    if (roll <= cumulative) return pool[pi];
+  }
+  return pool[pool.length - 1];
+}
+
+// How many XP past the final stage threshold triggers each bonus level
+var EVO_POST_MAX_INTERVAL = 500;
+
+function _applyCardEvoXp(account, card, xpAmount) {
+  if (!card || typeof xpAmount !== 'number' || xpAmount <= 0) return null;
+  var template = rpgData.CARD_BY_ID[card.cardId];
+  if (!template || !template.evolutionThresholds) return null;
+
+  // Init missing fields on legacy cards
+  if (typeof card.evolutionStage !== 'number') card.evolutionStage = 0;
+  if (typeof card.evolutionXp !== 'number') card.evolutionXp = 0;
+  if (card.evolutionPath === undefined) card.evolutionPath = null;
+  if (typeof card.evolutionBonusLevel !== 'number') card.evolutionBonusLevel = 0;
+
+  // Affix: evo_xp_bonus — equipped evo_linked affixes boost XP gain
+  var evoXpMult = 1.0;
+  if (card.affixes && Array.isArray(card.affixes)) {
+    for (var _axi = 0; _axi < card.affixes.length; _axi++) {
+      if (card.affixes[_axi] && card.affixes[_axi].effect && card.affixes[_axi].effect.type === 'evo_xp_bonus') {
+        evoXpMult += (card.affixes[_axi].effect.value || 0);
+      }
+    }
+  }
+  card.evolutionXp += Math.floor(xpAmount * evoXpMult);
+
+  // Check for stage advancement (stages 0 → 3)
+  while (card.evolutionStage < 3) {
+    var threshold = template.evolutionThresholds[card.evolutionStage];
+    if (card.evolutionXp < threshold) break;
+
+    card.evolutionStage++;
+
+    // Apply the additive stage bonus effect (stages 1 and 2 only)
+    // Push to _baseEffects so refreshCardEffects picks it up correctly
+    if (card.evolutionStage <= 2 && template.evolutionStageEffects && template.evolutionStageEffects[card.evolutionStage]) {
+      var _stageEff = JSON.parse(JSON.stringify(template.evolutionStageEffects[card.evolutionStage]));
+      // Affix: evo_stage_value_bonus — boost stage effect values
+      var _stageBonusMult = 1.0;
+      if (card.affixes && Array.isArray(card.affixes)) {
+        for (var _sbi = 0; _sbi < card.affixes.length; _sbi++) {
+          if (card.affixes[_sbi] && card.affixes[_sbi].effect && card.affixes[_sbi].effect.type === 'evo_stage_value_bonus') {
+            _stageBonusMult += (card.affixes[_sbi].effect.value || 0);
+          }
+        }
+      }
+      if (_stageBonusMult > 1.0) {
+        if (typeof _stageEff.value === 'number') _stageEff.value = Math.round(_stageEff.value * _stageBonusMult * 100) / 100;
+        if (typeof _stageEff.base === 'number') _stageEff.base = Math.round(_stageEff.base * _stageBonusMult);
+      }
+      if (card._baseEffects) card._baseEffects.push(_stageEff);
+      else card.effects.push(_stageEff); // legacy fallback
+    }
+
+    // Grant a new procedural affix on stages 1 and 2
+    var grantedAffix = null;
+    if (card.evolutionStage <= 2 && rpgData.rollEvoAffix && rpgData.addAffixToCard) {
+      var _evoAffix = rpgData.rollEvoAffix(card);
+      if (_evoAffix) {
+        rpgData.addAffixToCard(card, _evoAffix.id);
+        grantedAffix = { id: _evoAffix.id, label: _evoAffix.label, tier: _evoAffix.tier };
+      }
+    } else if (card._baseEffects && rpgData.refreshCardEffects) {
+      // Rebuild effects[] after stage bonus was pushed to _baseEffects
+      rpgData.refreshCardEffects(card);
+    }
+
+    // Stage 3: await player's path choice
+    if (card.evolutionStage === 3) {
+      card.pendingEvolutionChoice = true;
+    }
+
+    // Roll for procedural mutation on stage advance (5% base, scaled by luck)
+    var evoLuck = 0;
+    for (var efIdx = 0; efIdx < card.effects.length; efIdx++) {
+      var ef = card.effects[efIdx];
+      if (ef.type === 'luck_bonus' || ef.type === 'card_luck_bonus') evoLuck += (ef.value || 0);
+    }
+    // Add racial base luck
+    var _evoRace = account.race && rpgData.RACES && rpgData.RACES[account.race];
+    if (_evoRace && _evoRace.baseLuck) evoLuck += _evoRace.baseLuck;
+    // Check for racial mutation_chance_bonus (gnome)
+    var _evoMutBonus = 0;
+    if (_evoRace && _evoRace.racialFeat && _evoRace.racialFeat.effects) {
+      for (var _rmi = 0; _rmi < _evoRace.racialFeat.effects.length; _rmi++) {
+        if (_evoRace.racialFeat.effects[_rmi].type === 'mutation_chance_bonus') {
+          _evoMutBonus += (_evoRace.racialFeat.effects[_rmi].value || 0);
+        }
+      }
+    }
+    var evoMutation = rpgData.rollMutation(0.05 + _evoMutBonus, evoLuck);
+    // Affix: next_mutation_min_tier — guarantee minimum mutation tier
+    if (evoMutation && card.affixes && Array.isArray(card.affixes)) {
+      var _minTier = 1;
+      for (var _mti = 0; _mti < card.affixes.length; _mti++) {
+        if (card.affixes[_mti] && card.affixes[_mti].effect && card.affixes[_mti].effect.type === 'next_mutation_min_tier') {
+          _minTier = Math.max(_minTier, card.affixes[_mti].effect.value || 1);
+        }
+      }
+      if (evoMutation.tier < _minTier) {
+        // Re-roll for a higher tier mutation
+        var _reroll = rpgData.rollMutation(1.0, evoLuck); // guaranteed roll
+        if (_reroll && _reroll.tier >= _minTier) evoMutation = _reroll;
+      }
+    }
+    var viralSpreads = [];
+    if (evoMutation) {
+      rpgData.applyMutation(card, evoMutation);
+      // Viral spread: mutation may spread to other equipped cards
+      viralSpreads = _spreadMutation(account, card, evoLuck);
+    }
+
+    return {
+      instanceId: card.instanceId,
+      newStage: card.evolutionStage,
+      pendingChoice: card.evolutionStage === 3,
+      mutation: evoMutation || null,
+      viralSpreads: viralSpreads,
+      grantedAffix: grantedAffix,
+    };
+  }
+
+  // Post-max leveling: cards never stop improving — every EVO_POST_MAX_INTERVAL XP
+  // beyond the final threshold awards a guaranteed tier-1 procedural bonus.
+  if (card.evolutionStage >= 3) {
+    var maxThreshold = template.evolutionThresholds[template.evolutionThresholds.length - 1];
+    var nextBonusAt = maxThreshold + (card.evolutionBonusLevel + 1) * EVO_POST_MAX_INTERVAL;
+    if (card.evolutionXp >= nextBonusAt) {
+      card.evolutionBonusLevel++;
+      // Luck from card effects
+      var postLuck = 0;
+      for (var pei = 0; pei < card.effects.length; pei++) {
+        var pe = card.effects[pei];
+        if (pe.type === 'luck_bonus' || pe.type === 'card_luck_bonus') postLuck += (pe.value || 0);
+      }
+      var _postRace = account.race && rpgData.RACES && rpgData.RACES[account.race];
+      if (_postRace && _postRace.baseLuck) postLuck += _postRace.baseLuck;
+      var bonusMut = _forceTier1Mutation(postLuck);
+      if (bonusMut) {
+        rpgData.applyMutation(card, bonusMut);
+        var bonusViralSpreads = _spreadMutation(account, card, postLuck);
+        return {
+          instanceId: card.instanceId,
+          bonusLevel: card.evolutionBonusLevel,
+          mutation: bonusMut,
+          viralSpreads: bonusViralSpreads,
+        };
+      }
+    }
+  }
+
+  return null; // XP added but no advancement this call
+}
+
+// Apply evo XP to a specific card instance and save.
+function gainCardEvolutionXp(key, instanceId, xpAmount) {
+  var account = loadAccount(key);
+  if (!account || !account.rpgCards) return null;
+
+  var card = null;
+  for (var i = 0; i < account.rpgCards.length; i++) {
+    if (account.rpgCards[i].instanceId === instanceId) { card = account.rpgCards[i]; break; }
+  }
+  if (!card) return null;
+
+  var result = _applyCardEvoXp(account, card, xpAmount);
+  saveAccount(account);
+  return { card: card, advanced: !!result, stageResult: result };
+}
+
+// Apply evo XP to all cards of a given evoCategory on this account.
+// Equipped cards get full xpAmount; non-equipped get 25%.
+// Returns array of any stage-advance results.
+function gainArchetypeCategoryXp(key, evoCategory, xpAmount) {
+  var account = loadAccount(key);
+  if (!account || !account.rpgCards || account.rpgCards.length === 0) return [];
+
+  // Build equipped set for O(1) lookup
+  var equippedSet = {};
+  var equipped = account.equippedCards || [];
+  for (var e = 0; e < equipped.length; e++) {
+    if (equipped[e]) equippedSet[equipped[e]] = true;
+  }
+
+  var anyChange = false;
+  var stageAdvances = [];
+
+  for (var i = 0; i < account.rpgCards.length; i++) {
+    var card = account.rpgCards[i];
+    var template = rpgData.CARD_BY_ID[card.cardId];
+    if (!template || template.evoCategory !== evoCategory) continue;
+
+    var isEquipped = !!equippedSet[card.instanceId];
+    var amount = isEquipped ? xpAmount : Math.ceil(xpAmount * 0.25);
+
+    var result = _applyCardEvoXp(account, card, amount);
+    if (result) stageAdvances.push(result);
+    anyChange = true; // XP was awarded even if no stage advance
+  }
+
+  if (anyChange) saveAccount(account);
+  return stageAdvances;
+}
+
+// Apply a chosen evolution path to a card (called from rpg-cards handler).
+function applyEvolutionPath(key, instanceId, path) {
+  var account = loadAccount(key);
+  if (!account || !account.rpgCards) return { error: 'Account not found' };
+
+  var card = null;
+  for (var i = 0; i < account.rpgCards.length; i++) {
+    if (account.rpgCards[i].instanceId === instanceId) { card = account.rpgCards[i]; break; }
+  }
+  if (!card) return { error: 'Card not found' };
+  if (!card.pendingEvolutionChoice) return { error: 'Card has no pending evolution choice' };
+  if (path !== 'A' && path !== 'B') return { error: 'Path must be A or B' };
+
+  var template = rpgData.CARD_BY_ID[card.cardId];
+  if (!template || !template.evolutionPaths || !template.evolutionPaths[path]) {
+    return { error: 'Evolution path not available for this card' };
+  }
+
+  var pathData = template.evolutionPaths[path];
+  card.evolutionPath = path;
+  card.pendingEvolutionChoice = false;
+  card.name = card.name + ' [' + pathData.name + ']';
+
+  // Add path effects to card's base effects so refreshCardEffects picks them up
+  for (var j = 0; j < pathData.effects.length; j++) {
+    var _pathEff = JSON.parse(JSON.stringify(pathData.effects[j]));
+    if (card._baseEffects) card._baseEffects.push(_pathEff);
+    else card.effects.push(_pathEff); // legacy fallback
+  }
+
+  // Rebuild effects[] + combos[] with the new path effects included
+  if (rpgData.refreshCardEffects) rpgData.refreshCardEffects(card);
+
+  // Invalidate card effects cache
+  invalidateCardEffectsCache(key);
+
+  saveAccount(account);
+  return { card: card };
+}
+
 module.exports = {
   createAccount,
   createTempAccount,
@@ -3873,6 +4399,11 @@ module.exports = {
   fuseRpgCards,
   getRpgCards,
   getEquippedCardEffects,
+  getPlayerLuck,
+  invalidateCardEffectsCache,
+  gainCardEvolutionXp,
+  gainArchetypeCategoryXp,
+  applyEvolutionPath,
   selectAwakening,
   setMount,
   getMount,
@@ -3894,6 +4425,14 @@ module.exports = {
   incrementLeviathanKill,
   // Shard bridge: import account from master server into local cache
   importAccount,
+  // Async startup preload (call after server starts listening)
+  preloadKeyIndex,
+  // Weight / Encumbrance
+  ITEM_WEIGHTS,
+  getCarryCapacity,
+  getCurrentWeight,
+  getEncumbranceLevel,
+  getSpeedMultiplier,
 };
 
 // Import an account object from the master server into the local cache.

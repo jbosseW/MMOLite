@@ -42,6 +42,7 @@ var OVERWORLD_MONSTERS = [
     possibleLoot: [
       { type: 'herbs', chance: 0.15, amount: 1 },
     ],
+    evolvesTo: 'dire_wolf', evolveLevel: 8,
   },
   {
     id: 'mountain_goat',
@@ -52,6 +53,7 @@ var OVERWORLD_MONSTERS = [
     possibleLoot: [
       { type: 'stone', chance: 0.20, amount: 1 },
     ],
+    evolvesTo: 'mountain_ram', evolveLevel: 10,
   },
   {
     id: 'desert_scorpion',
@@ -62,6 +64,7 @@ var OVERWORLD_MONSTERS = [
     possibleLoot: [
       { type: 'glass_sand', chance: 0.20, amount: 1 },
     ],
+    evolvesTo: 'emperor_scorpion', evolveLevel: 12, evolveItem: 'mana_crystal',
   },
   {
     id: 'plains_boar',
@@ -72,6 +75,7 @@ var OVERWORLD_MONSTERS = [
     possibleLoot: [
       { type: 'wheat', chance: 0.15, amount: 1 },
     ],
+    evolvesTo: 'war_boar', evolveLevel: 8,
   },
   {
     id: 'snow_bear',
@@ -82,6 +86,7 @@ var OVERWORLD_MONSTERS = [
     possibleLoot: [
       { type: 'fish', chance: 0.20, amount: 1 },
     ],
+    evolvesTo: 'frost_titan_bear', evolveLevel: 15, evolveItem: 'mana_crystal',
   },
   {
     id: 'swamp_lizard',
@@ -93,6 +98,7 @@ var OVERWORLD_MONSTERS = [
       { type: 'mushroom', chance: 0.20, amount: 1 },
       { type: 'herbs', chance: 0.10, amount: 1 },
     ],
+    evolvesTo: 'marsh_drake', evolveLevel: 10,
   },
   {
     id: 'cave_bat',
@@ -101,6 +107,7 @@ var OVERWORLD_MONSTERS = [
     level: 1,
     biomes: [2, 5, 7, 12],  // MOUNTAIN, FOREST, SWAMP, WASTES
     possibleLoot: [],
+    evolvesTo: 'shadow_bat', evolveLevel: 6,
   },
   {
     id: 'shore_crab',
@@ -111,6 +118,7 @@ var OVERWORLD_MONSTERS = [
     possibleLoot: [
       { type: 'shellfish', chance: 0.25, amount: 1 },
     ],
+    evolvesTo: 'ironshell_crab', evolveLevel: 8,
   },
   {
     id: 'volcanic_imp',
@@ -180,6 +188,56 @@ var OVERWORLD_MONSTERS = [
       { type: 'stone', chance: 0.15, amount: 1 },
     ],
   },
+
+  // ── Evolved Forms ──
+  {
+    id: 'dire_wolf', name: 'Dire Wolf',
+    hp: 70, atk: 18, def: 8, xp: 30, goldDrop: 12,
+    level: 8, biomes: [5, 16],
+    possibleLoot: [{ type: 'herbs', chance: 0.20, amount: 2 }],
+  },
+  {
+    id: 'mountain_ram', name: 'Mountain Ram',
+    hp: 90, atk: 14, def: 16, xp: 35, goldDrop: 14,
+    level: 10, biomes: [2],
+    possibleLoot: [{ type: 'stone', chance: 0.25, amount: 2 }],
+  },
+  {
+    id: 'emperor_scorpion', name: 'Emperor Scorpion',
+    hp: 65, atk: 28, def: 10, xp: 45, goldDrop: 18,
+    level: 12, biomes: [1, 3],
+    possibleLoot: [{ type: 'glass_sand', chance: 0.25, amount: 2 }, { type: 'mana_crystal', chance: 0.08, amount: 1 }],
+  },
+  {
+    id: 'war_boar', name: 'War Boar',
+    hp: 100, atk: 16, def: 12, xp: 32, goldDrop: 12,
+    level: 8, biomes: [6, 8],
+    possibleLoot: [{ type: 'wheat', chance: 0.20, amount: 2 }],
+  },
+  {
+    id: 'frost_titan_bear', name: 'Frost Titan Bear',
+    hp: 160, atk: 32, def: 18, xp: 70, goldDrop: 30,
+    level: 15, biomes: [14],
+    possibleLoot: [{ type: 'fish', chance: 0.25, amount: 2 }, { type: 'mana_crystal', chance: 0.10, amount: 1 }],
+  },
+  {
+    id: 'marsh_drake', name: 'Marsh Drake',
+    hp: 85, atk: 20, def: 10, xp: 36, goldDrop: 14,
+    level: 10, biomes: [7],
+    possibleLoot: [{ type: 'mushroom', chance: 0.25, amount: 2 }, { type: 'herbs', chance: 0.15, amount: 2 }],
+  },
+  {
+    id: 'shadow_bat', name: 'Shadow Bat',
+    hp: 40, atk: 14, def: 4, xp: 20, goldDrop: 8,
+    level: 6, biomes: [2, 5, 7, 12],
+    possibleLoot: [{ type: 'dark_crystal', chance: 0.05, amount: 1 }],
+  },
+  {
+    id: 'ironshell_crab', name: 'Ironshell Crab',
+    hp: 60, atk: 14, def: 22, xp: 28, goldDrop: 10,
+    level: 8, biomes: [13],
+    possibleLoot: [{ type: 'shellfish', chance: 0.30, amount: 2 }, { type: 'iron_ore', chance: 0.10, amount: 1 }],
+  },
 ];
 
 // Build a lookup: biomeId -> array of monster definitions that spawn there
@@ -215,6 +273,34 @@ var CHASE_RANGE_PX = 150;            // Detection range for chasing players
 var CHASE_SPEED_PX_S = 60;           // Chase speed (faster than wander)
 var CHASE_LEASH_PX = 350;            // Max distance from spawn before returning
 
+// Time-of-day monster multipliers
+function getTimeMultipliers() {
+  var timeOfDay = (_state && _state.world && _state.world.timeOfDay) || 'day';
+  var mults;
+  switch (timeOfDay) {
+    case 'night': mults = { spawnRate: 1.5, aggroRange: 1.5, statMult: 1.2 }; break;
+    case 'dusk':  mults = { spawnRate: 1.2, aggroRange: 1.3, statMult: 1.1 }; break;
+    case 'dawn':  mults = { spawnRate: 0.8, aggroRange: 1.0, statMult: 1.0 }; break;
+    default:      mults = { spawnRate: 1.0, aggroRange: 1.0, statMult: 1.0 }; break;
+  }
+  // Weather modifiers
+  var weather = (_state && _state.world && _state.world.weather) || 'clear';
+  if (weather === 'storm') {
+    mults.spawnRate *= 1.3;
+    mults.aggroRange *= 0.8;
+  } else if (weather === 'fog') {
+    mults.spawnRate *= 1.1;
+    mults.aggroRange *= 0.6;
+  } else if (weather === 'rain') {
+    mults.spawnRate *= 1.05;
+    mults.aggroRange *= 0.9;
+  } else if (weather === 'snow') {
+    mults.spawnRate *= 0.9;
+    mults.aggroRange *= 0.85;
+  }
+  return mults;
+}
+
 // Unique ID counter for spawned monsters (resets on server restart, that's fine)
 var _nextMonsterId = 1;
 
@@ -243,16 +329,19 @@ function selectMonsterForPosition(worldX, worldY) {
 
 function spawnMonster(def, x, y) {
   var now = Date.now();
+  var timeMult = getTimeMultipliers();
+  var sm = timeMult.statMult;
+  var scaledHp = Math.round(def.hp * sm);
   return {
     id: generateMonsterId(),
     type: def.id,
     name: def.name,
     x: Math.round(x),
     y: Math.round(y),
-    hp: def.hp,
-    maxHp: def.hp,
-    atk: def.atk,
-    def: def.def,
+    hp: scaledHp,
+    maxHp: scaledHp,
+    atk: Math.round(def.atk * sm),
+    def: Math.round(def.def * sm),
     xp: def.xp,
     goldDrop: def.goldDrop,
     level: def.level,
@@ -389,7 +478,10 @@ function runSpawnCycle() {
       }
 
       // Spawn up to target, but throttle to 2 per tick per player to avoid lag spikes
-      var toSpawn = Math.min(2, MONSTERS_PER_PLAYER - nearbyCount);
+      // Time-of-day: increase effective target at night/dusk
+      var timeMults = getTimeMultipliers();
+      var effectiveTarget = Math.round(MONSTERS_PER_PLAYER * timeMults.spawnRate);
+      var toSpawn = Math.min(2, effectiveTarget - nearbyCount);
       if (toSpawn <= 0) continue;
       if (aliveCount >= MAX_MONSTERS_PER_ZONE) break;
 
@@ -538,7 +630,9 @@ function runPatrolCycle() {
       // --- Check for nearby players to chase ---
       if (m.patrolMode !== 'chase') {
         var closestPlayer = null;
-        var closestDistSq = CHASE_RANGE_PX * CHASE_RANGE_PX;
+        var _aggroMult = getTimeMultipliers().aggroRange;
+        var _effectiveChaseRange = CHASE_RANGE_PX * _aggroMult;
+        var closestDistSq = _effectiveChaseRange * _effectiveChaseRange;
         for (var pi = 0; pi < zonePlayers.length; pi++) {
           var p = zonePlayers[pi];
           // Don't chase players already in combat
@@ -791,12 +885,174 @@ module.exports = {
         return;
       }
 
-      // TODO: Check evolution requirements (level, items, etc.)
-      // Stub: just acknowledge the request
+      // Look up base definition for evolution data
+      var baseDef = OVERWORLD_MONSTERS.find(function(m) { return m.id === monster.baseId; });
+      if (!baseDef || !baseDef.evolvesTo) {
+        socket.emit('monster_evolve_result', { monsterId: data.monsterId, success: false, message: 'This monster cannot evolve.' });
+        return;
+      }
+
+      // Check level requirement
+      if ((monster.level || 1) < baseDef.evolveLevel) {
+        socket.emit('monster_evolve_result', { monsterId: data.monsterId, success: false,
+          message: 'Requires level ' + baseDef.evolveLevel + ' (current: ' + (monster.level || 1) + ')' });
+        return;
+      }
+
+      // Check item requirement
+      if (baseDef.evolveItem) {
+        var inv = acc.mmoInventory || {};
+        if ((inv[baseDef.evolveItem] || 0) < 1) {
+          var itemName = baseDef.evolveItem.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+          socket.emit('monster_evolve_result', { monsterId: data.monsterId, success: false,
+            message: 'Requires 1 ' + itemName });
+          return;
+        }
+        // Consume item
+        accounts.addResource(key, baseDef.evolveItem, -1);
+      }
+
+      // Look up evolved form
+      var evolvedDef = OVERWORLD_MONSTERS.find(function(m) { return m.id === baseDef.evolvesTo; });
+      if (!evolvedDef) {
+        socket.emit('monster_evolve_result', { monsterId: data.monsterId, success: false, message: 'Evolved form data not found.' });
+        return;
+      }
+
+      // Transform monster
+      var oldName = monster.name;
+      monster.baseId = evolvedDef.id;
+      monster.name = evolvedDef.name;
+      // Scale stats: +20% on top of evolved base
+      monster.baseHp = Math.round(evolvedDef.hp * 1.2);
+      monster.baseAtk = Math.round(evolvedDef.atk * 1.2);
+      monster.baseDef = Math.round(evolvedDef.def * 1.2);
+      monster.hp = monster.baseHp;
+      monster.maxHp = monster.baseHp;
+      monster.evolved = true;
+
+      accounts.saveAccount(acc);
+
       socket.emit('monster_evolve_result', {
         monsterId: data.monsterId,
-        success: false,
-        message: 'Evolution system not yet implemented',
+        success: true,
+        oldName: oldName,
+        newName: evolvedDef.name,
+        monster: {
+          instanceId: monster.instanceId,
+          baseId: monster.baseId,
+          name: monster.name,
+          level: monster.level,
+          hp: monster.hp,
+          maxHp: monster.maxHp,
+          baseAtk: monster.baseAtk,
+          baseDef: monster.baseDef,
+          evolved: true,
+        },
+      });
+    });
+
+    // --- monster_capture: attempt to capture an overworld monster ---
+    socket.on('monster_capture', function(data) {
+      if (!data || typeof data.monsterId !== 'string') return;
+
+      var key = socketAccountMap.get(socket.id);
+      if (!key) return;
+
+      var acc = accounts.loadAccount(key);
+      if (!acc) return;
+
+      // Check player has taming_net
+      var inv = acc.mmoInventory || {};
+      if ((inv['taming_net'] || 0) < 1) {
+        socket.emit('monster_error', { message: 'You need a Taming Net to capture monsters.' });
+        return;
+      }
+
+      // Find the monster in the player's zone
+      var zoneId = state.playerZones.get(socket.id);
+      if (!zoneId) return;
+      var monsterList = state.zoneMonsters.get(zoneId);
+      if (!monsterList) {
+        socket.emit('monster_error', { message: 'No monsters nearby.' });
+        return;
+      }
+
+      var monster = null;
+      for (var i = 0; i < monsterList.length; i++) {
+        if (monsterList[i].id === data.monsterId && monsterList[i].alive) {
+          monster = monsterList[i];
+          break;
+        }
+      }
+      if (!monster) {
+        socket.emit('monster_error', { message: 'Monster not found.' });
+        return;
+      }
+
+      // Must be below 25% HP
+      var hpRatio = monster.hp / monster.maxHp;
+      if (hpRatio > 0.25) {
+        socket.emit('monster_capture_result', { success: false, monsterId: data.monsterId,
+          message: 'Monster is too healthy to capture. Weaken it below 25% HP first.' });
+        return;
+      }
+
+      // Consume taming net
+      accounts.addResource(key, 'taming_net', -1);
+
+      // Capture chance: 30% base + level advantage bonus
+      var playerLevel = acc.level || 1;
+      var monsterLevel = monster.level || 1;
+      var levelBonus = Math.max(0, (playerLevel - monsterLevel) * 0.03);
+      var captureChance = Math.min(0.30 + levelBonus, 0.80); // cap at 80%
+
+      if (Math.random() > captureChance) {
+        socket.emit('monster_capture_result', { success: false, monsterId: data.monsterId,
+          message: 'The monster broke free!' });
+        return;
+      }
+
+      // Success! Add monster to player's roster
+      if (!acc.monsters) acc.monsters = [];
+      var baseDef = OVERWORLD_MONSTERS.find(function(m) { return m.id === monster.baseId || m.id === monster.templateId; });
+      var instanceId = 'mon_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+      acc.monsters.push({
+        instanceId: instanceId,
+        baseId: baseDef ? baseDef.id : (monster.baseId || monster.templateId || 'unknown'),
+        name: monster.name,
+        level: monster.level || 1,
+        xp: 0,
+        hp: baseDef ? baseDef.hp : monster.maxHp,
+        maxHp: baseDef ? baseDef.hp : monster.maxHp,
+        baseHp: baseDef ? baseDef.hp : monster.maxHp,
+        baseAtk: baseDef ? baseDef.atk : (monster.atk || 5),
+        baseDef: baseDef ? baseDef.def : (monster.def || 3),
+        capturedAt: Date.now(),
+      });
+      accounts.saveAccount(acc);
+
+      // Remove monster from zone
+      monster.alive = false;
+      monster.hp = 0;
+      for (var ri = monsterList.length - 1; ri >= 0; ri--) {
+        if (monsterList[ri].id === data.monsterId) {
+          monsterList.splice(ri, 1);
+          break;
+        }
+      }
+      io.to('zone:' + zoneId).emit('zone_monster_died', { id: data.monsterId });
+
+      socket.emit('monster_capture_result', {
+        success: true,
+        monsterId: data.monsterId,
+        monster: {
+          instanceId: instanceId,
+          baseId: baseDef ? baseDef.id : 'unknown',
+          name: monster.name,
+          level: monster.level || 1,
+        },
+        message: 'Captured ' + monster.name + '!',
       });
     });
 
@@ -912,12 +1168,27 @@ module.exports = {
       // Build player combat state (mirroring dungeon.js initPlayerCombatState)
       var computed = rpgData.computeStats(acc.rpgStats || rpgData.getDefaultStats(), acc.level || 1, acc.race);
 
+      // Resolve equipped card IDs to full card objects
+      var equippedCardObjects = [];
+      if (acc.rpgCards && Array.isArray(acc.rpgCards) && acc.equippedCards && Array.isArray(acc.equippedCards)) {
+        var _cardMap = {};
+        for (var cm = 0; cm < acc.rpgCards.length; cm++) {
+          if (acc.rpgCards[cm] && acc.rpgCards[cm].instanceId) {
+            _cardMap[acc.rpgCards[cm].instanceId] = acc.rpgCards[cm];
+          }
+        }
+        for (var ce = 0; ce < acc.equippedCards.length; ce++) {
+          var _cid = acc.equippedCards[ce];
+          if (_cid && _cardMap[_cid]) equippedCardObjects.push(_cardMap[_cid]);
+        }
+      }
+
       // Collect card bonuses
       var bonusHp = 0, bonusCrit = 0, bonusDodge = 0, bonusMeleeDmg = 0, bonusMagicDmg = 0;
       var bonusDungeonDmg = 0, bonusBossDmg = 0, bonusDungeonDef = 0;
-      if (acc.equippedCards && Array.isArray(acc.equippedCards)) {
-        for (var ci = 0; ci < acc.equippedCards.length; ci++) {
-          var card = acc.equippedCards[ci];
+      if (equippedCardObjects.length > 0) {
+        for (var ci = 0; ci < equippedCardObjects.length; ci++) {
+          var card = equippedCardObjects[ci];
           if (!card || !card.effects) continue;
           for (var ei = 0; ei < card.effects.length; ei++) {
             var eff = card.effects[ei];
@@ -1006,7 +1277,7 @@ module.exports = {
         race: acc.race,
         rpgStats: acc.rpgStats || rpgData.getDefaultStats(),
         level: acc.level || 1,
-        equippedCards: acc.equippedCards || [],
+        equippedCards: equippedCardObjects,
         combat: combat,
       }];
 
@@ -1074,6 +1345,35 @@ module.exports = {
               var xpRate = (_serverRules && _serverRules.xpRate) ? _serverRules.xpRate : undefined;
               var xpResult = accounts.addSkillXp(capturedAccKey, 'melee', capturedMonster.xp, xpRate);
 
+              // Monster XP: award XP to player's active monster
+              try {
+                var monAcc = accounts.loadAccount(capturedAccKey);
+                if (monAcc && monAcc.monsters && monAcc.activeParty && monAcc.activeParty.length > 0) {
+                  var activeMonId = monAcc.activeParty[0]; // Lead monster gets XP
+                  var activeMon = monAcc.monsters.find(function(m) { return m.instanceId === activeMonId; });
+                  if (activeMon) {
+                    if (!activeMon.xp) activeMon.xp = 0;
+                    if (!activeMon.level) activeMon.level = 1;
+                    activeMon.xp += capturedMonster.xp;
+                    // Level up: xp threshold = 50 * level^1.5
+                    var monXpNeeded = Math.floor(50 * Math.pow(activeMon.level, 1.5));
+                    while (activeMon.xp >= monXpNeeded && activeMon.level < 100) {
+                      activeMon.xp -= monXpNeeded;
+                      activeMon.level++;
+                      if (activeMon.baseHp) activeMon.baseHp = Math.round(activeMon.baseHp * 1.03);
+                      if (activeMon.baseAtk) activeMon.baseAtk = Math.round(activeMon.baseAtk * 1.03);
+                      if (activeMon.baseDef) activeMon.baseDef = Math.round(activeMon.baseDef * 1.03);
+                      activeMon.maxHp = activeMon.baseHp;
+                      activeMon.hp = activeMon.maxHp;
+                      monXpNeeded = Math.floor(50 * Math.pow(activeMon.level, 1.5));
+                    }
+                    accounts.saveAccount(monAcc);
+                  }
+                }
+              } catch (monXpErr) {
+                console.error('[overworld_combat] Monster XP error:', monXpErr.message);
+              }
+
               // Phantom Skill XP: Skinning for beast-type overworld kills (10-20 XP)
               var _owBeastPattern = /wolf|bear|boar|spider|lizard|bat|crab|scorpion|viper|raptor|toad|beetle|hound|drake|serpent|worm|ape|bird|insect|crawler|goat|imp|hawk/i;
               if (capturedMonster.name && _owBeastPattern.test(capturedMonster.name)) {
@@ -1137,6 +1437,27 @@ module.exports = {
                   pendingPacks: xpResult ? xpResult.pendingPacks : 0,
                 });
               }
+
+              // --- Quest progress: kill-type quests ---
+              try {
+                var qAcc = accounts.loadAccount(capturedAccKey);
+                if (qAcc && qAcc.questProgress && qAcc.questProgress.active) {
+                  var rpgData = require('../rpg-data');
+                  var qChanged = false;
+                  for (var qi = 0; qi < qAcc.questProgress.active.length; qi++) {
+                    var quest = qAcc.questProgress.active[qi];
+                    var tmpl = rpgData.WORLD_QUEST_TEMPLATES ? rpgData.WORLD_QUEST_TEMPLATES.find(function(t) { return t.questId === quest.questId; }) : null;
+                    if (tmpl && tmpl.type === 'kill' && (tmpl.target.monster === capturedMonster.baseId || tmpl.target.monster === capturedMonster.templateId)) {
+                      quest.progress = Math.min(quest.progress + 1, quest.targetCount);
+                      qChanged = true;
+                      if (targetSock) {
+                        targetSock.emit('quest_progress', { questId: quest.questId, progress: quest.progress, targetCount: quest.targetCount, complete: quest.progress >= quest.targetCount });
+                      }
+                    }
+                  }
+                  if (qChanged) accounts.saveAccount(qAcc);
+                }
+              } catch (qErr) { /* quest progress error is non-fatal */ }
 
               // --- Durability loss: weapon 1% per kill, armor 0.5% per hit taken ---
               try {

@@ -5,6 +5,7 @@
 var crypto = require('crypto');
 var path = require('path');
 var fs = require('fs');
+var knowledgeHandler = require('./knowledge');
 
 var PLOT_SIZE = 512;    // 1 chunk * 512px
 var PLOT_GRID = 512;    // snap to 1-chunk grid
@@ -242,6 +243,15 @@ module.exports = {
 
           // Confirm to player
           socket.emit('claim_plot_result', { success: true, plot: unownedPlot });
+
+          // Fire glossary trigger for plot claim (re-claim path)
+          try {
+            var reclaimTerms = knowledgeHandler.fireGlossaryTrigger(accounts, accKey, 'plot_claim');
+            for (var rti = 0; rti < reclaimTerms.length; rti++) {
+              socket.emit('knowledge_term_unlocked', reclaimTerms[rti]);
+            }
+          } catch (e) { /* glossary trigger non-fatal */ }
+
           console.log('[plot] ' + user.name + ' re-claimed abandoned plot ' + unownedPlot.id + ' at ' + plotX + ',' + plotY);
           return;
         }
@@ -312,6 +322,15 @@ module.exports = {
 
         // Confirm to player
         socket.emit('claim_plot_result', { success: true, plot: plot });
+
+        // Fire glossary trigger for plot claim
+        try {
+          var plotTerms = knowledgeHandler.fireGlossaryTrigger(accounts, accKey, 'plot_claim');
+          for (var pti = 0; pti < plotTerms.length; pti++) {
+            socket.emit('knowledge_term_unlocked', plotTerms[pti]);
+          }
+        } catch (e) { /* glossary trigger non-fatal */ }
+
         console.log('[plot] ' + user.name + ' claimed plot at ' + plotX + ',' + plotY);
 
       } catch (err) {

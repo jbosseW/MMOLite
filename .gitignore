@@ -5,8 +5,15 @@ node_modules/
 accounts/
 data/accounts/
 
+# Runtime data
+data/auction/
+data/guilds/
+data/placements/
+data/plots/
+
 # Build output
 build/
+dist/
 
 # Secrets / env
 *.env
@@ -29,15 +36,17 @@ msvcp120.dll
 msvcr120.dll
 Uninstall.exe
 
-# Temp/context files
-context2.txt
-context3.txt
-context4.txt
-changes.txt
-*.txt
+# Logs
+*.log
+
+# System junk
+*.lnk
+.DS_Store
+Thumbs.db
+
+# Temp/context/session files
+context*.txt
 SESSION*.md
 SESSION-HANDOFF*.md
 DUNGEON_SYSTEM_CONTEXT.txt
-
-# Windows cruft
-C:Usersjonat.bosscordtest-upload.txt
+changes.txt

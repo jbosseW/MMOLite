@@ -1,9 +1,11 @@
 // handlers/disconnect.js
 // Socket handler: disconnect (full cleanup including friend offline notifications)
 
+const { clearSocketCooldowns } = require('./helpers');
+
 module.exports = {
   init(io, socket, deps) {
-    var { socketAccountMap, accounts, state, game, lobbyManager, lieroManager, tcgBattleManager, tcgTradeManager, tcgTableManager, coinFlipManager, saveChipsForSocket, saveAllLobbyChips, _removeFromIpTracking, ratelimit, sessionTokens, _unlinkSocket } = deps;
+    var { socketAccountMap, accounts, state, _removeFromIpTracking, ratelimit, sessionTokens, _unlinkSocket, getSocketsForAccount, directorLich } = deps;
     var shardBridge;
     try { shardBridge = require('../shard-bridge'); } catch (_) { shardBridge = null; }
 
@@ -21,15 +23,16 @@ module.exports = {
         const accKey = socketAccountMap.get(socket.id);
         const wasTemp = accKey ? accounts.isTempAccount(accKey) : true;
 
-        // Notify friends this user went offline
+        // Notify friends this user went offline (O(1) per friend via reverse index)
         if (accKey && !wasTemp) {
           try {
             var friendsData = accounts.getFriendsData(accKey);
             if (friendsData && friendsData.friends.length > 0) {
               for (var fi = 0; fi < friendsData.friends.length; fi++) {
                 var fk = friendsData.friends[fi].key;
-                for (var [sid, skey] of socketAccountMap) {
-                  if (skey === fk && sid !== socket.id) {
+                var friendSockets = getSocketsForAccount ? getSocketsForAccount(fk) : new Set();
+                for (var sid of friendSockets) {
+                  if (sid !== socket.id) {
                     var fSocket = io.sockets.sockets.get(sid);
                     if (fSocket) fSocket.emit('friend_status_changed', { key: accKey, online: false });
                   }
@@ -66,11 +69,15 @@ module.exports = {
           }
         }
 
-        // Clean up session tokens
-        if (sessionTokens) {
-          for (const [token, data] of sessionTokens) {
-            if (data.socketId === socket.id) sessionTokens.delete(token);
-          }
+        // Clean up session token (O(1) via stored reference)
+        if (sessionTokens && socket._mmoliteSessionToken) {
+          sessionTokens.delete(socket._mmoliteSessionToken);
+          socket._mmoliteSessionToken = null;
+        }
+
+        // Clean up survival visited chunks to prevent memory leak (MED-3)
+        if (accKey && state._survivalVisitedChunks) {
+          state._survivalVisitedChunks.delete(accKey);
         }
 
         const userName = disconnectingUser.name;
@@ -132,85 +139,13 @@ module.exports = {
           }
         }
 
-        // Clean up game — Worker thread (BossOrbs + BossBrawl)
-        if (game && typeof game.disconnectCleanup === 'function') {
-          game.disconnectCleanup(socket.id);
+        // Clean up lich corruption debuff timer
+        if (directorLich && directorLich.clearDebuffTimer) {
+          directorLich.clearDebuffTimer(socket.id);
         }
 
-        // Clean up card game lobby
-        if (lobbyManager) {
-          const cardLobbyId = lobbyManager.getPlayerLobbyId(socket.id);
-          if (cardLobbyId) {
-            const cardLobby = lobbyManager.lobbies.get(cardLobbyId);
-            if (cardLobby) {
-              const p = cardLobby.players.get(socket.id);
-              if (p) saveChipsForSocket(socket.id, p.chips);
-            }
-          }
-          const cardResult = lobbyManager.leaveLobby(socket.id);
-          if (cardResult && !cardResult.destroyed && cardResult.lobby) {
-            if (lobbyManager.getHumanCount(cardResult.lobbyId) === 0) {
-              lobbyManager.removeBots(cardResult.lobbyId);
-            }
-            const freshLobby = lobbyManager.lobbies.get(cardResult.lobbyId);
-            if (freshLobby && freshLobby.state === 'waiting') {
-              saveAllLobbyChips(freshLobby);
-              lobbyManager.rebuyBrokePlayers(freshLobby);
-            }
-            if (freshLobby) {
-              for (const [pid] of freshLobby.players) {
-                const s = io.sockets.sockets.get(pid);
-                if (s) s.emit('card_lobby_update', lobbyManager.getLobbyState(cardResult.lobbyId, pid));
-              }
-            }
-            io.to('lobby:cards').emit('card_lobbies_updated', { lobbies: lobbyManager.getLobbies() });
-          } else if (cardResult) {
-            io.to('lobby:cards').emit('card_lobbies_updated', { lobbies: lobbyManager.getLobbies() });
-          }
-        }
-
-        // Clean up TCG table
-        if (tcgTableManager) {
-          const tableResult = tcgTableManager.leaveTable(socket.id);
-          if (tableResult) {
-            if (tableResult.removed && tableResult.guestSocketId) {
-              const guestSock = io.sockets.sockets.get(tableResult.guestSocketId);
-              if (guestSock) guestSock.emit('tcg_table_closed', { reason: 'Host disconnected' });
-            } else if (!tableResult.removed && tableResult.table && tableResult.table.host) {
-              const hostSock = io.sockets.sockets.get(tableResult.table.host.socketId);
-              if (hostSock) {
-                const updatedTable = tcgTableManager.getTable(tableResult.table.id);
-                if (updatedTable) hostSock.emit('tcg_table_updated', updatedTable);
-              }
-            }
-          }
-        }
-        if (tcgBattleManager) {
-          const tcgResult = tcgBattleManager.leaveBattle(socket.id);
-          if (tcgResult && tcgResult.battle) {
-            for (const [pid] of tcgResult.battle.players) {
-              if (pid !== socket.id) {
-                const s = io.sockets.sockets.get(pid);
-                if (s) s.emit('tcg_battle_update', tcgBattleManager.getBattleState(tcgResult.battle.id, pid));
-              }
-            }
-          }
-        }
-        if (tcgTradeManager) tcgTradeManager.cancel(socket.id);
-
-        // Clean up coin flip lobby
-        if (coinFlipManager) {
-          const cfResult = coinFlipManager.leaveLobby(socket.id);
-          if (cfResult && !cfResult.destroyed) {
-            io.to('cflobby:' + cfResult.lobbyId).emit('cf_lobby_update', coinFlipManager.getLobbyState(cfResult.lobbyId));
-          }
-          if (cfResult) io.emit('cf_lobbies_updated', { lobbies: coinFlipManager.getLobbies() });
-        }
-
-        // Liero proxy cache cleanup
-        if (lieroManager && typeof lieroManager._playerLobbies === 'object') {
-          lieroManager._playerLobbies.delete(socket.id);
-        }
+        // Clean up graceful rate-limit cooldowns
+        clearSocketCooldowns(socket.id);
 
         state.removeUser(socket.id);
 

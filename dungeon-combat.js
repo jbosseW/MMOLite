@@ -189,6 +189,26 @@ function getCardEffectTotal(unit, effectType) {
   return total;
 }
 
+/**
+ * Collect all on_hit affixes from a unit's equipped cards.
+ * Returns array of affix effect objects (each has .id, .label, .tier, .cat, .effect).
+ */
+function getUnitOnHitAffixes(unit) {
+  if (!unit || !unit.equippedCards) return [];
+  var affixes = [];
+  for (var i = 0; i < unit.equippedCards.length; i++) {
+    var card = unit.equippedCards[i];
+    if (!card || !card.affixes || !Array.isArray(card.affixes)) continue;
+    for (var j = 0; j < card.affixes.length; j++) {
+      var aff = card.affixes[j];
+      if (aff && aff.cat === 'on_hit') {
+        affixes.push(aff);
+      }
+    }
+  }
+  return affixes;
+}
+
 // ---------------------------------------------------------------------------
 // Module-level combat storage
 // ---------------------------------------------------------------------------
@@ -538,10 +558,14 @@ function executeMove(combat, unitId, path) {
   }
 
   // --- Buff: cantMove — e.g. Absolute Guard prevents movement ---
+  // --- Debuff: rooted — e.g. death_grip root prevents movement ---
   if (unit.statusEffects) {
     for (var cmvI = 0; cmvI < unit.statusEffects.length; cmvI++) {
       if (unit.statusEffects[cmvI].cantMove && unit.statusEffects[cmvI].type === 'buff') {
         return { success: false, reason: 'Cannot move while ' + (unit.statusEffects[cmvI].name || 'ability') + ' is active', tilesMoved: 0, events: [] };
+      }
+      if (unit.statusEffects[cmvI].name === 'rooted' && unit.statusEffects[cmvI].type === 'debuff') {
+        return { success: false, reason: 'You are rooted in place!', tilesMoved: 0, events: [] };
       }
     }
   }
@@ -1029,7 +1053,7 @@ function calculateDamage(attacker, target) {
           name: 'gem_poison',
           type: 'debuff',
           duration: 3,
-          damagePerTurn: gb.poisonDamage || 3,
+          tickDamage: gb.poisonDamage || 3,
           sourceId: attacker.id,
         });
       }
@@ -1052,10 +1076,10 @@ function calculateDamage(attacker, target) {
     if (stats.uniqueEffect) {
       var ue = stats.uniqueEffect;
       // Execute threshold: instant kill below X% HP
-      if (ue.type === 'execute_threshold' && target.combat && target.combat.hp !== undefined && target.combat.maxHp) {
-        var hpPct = target.combat.hp / target.combat.maxHp;
+      if (ue.type === 'execute_threshold' && target.hp !== undefined && target.maxHp) {
+        var hpPct = target.hp / target.maxHp;
         if (hpPct <= (ue.threshold || 0.15)) {
-          damage = target.combat.hp + 1; // Kill
+          damage = target.hp + 1; // Kill
         }
       }
       // Guaranteed crit vs debuffed enemies
@@ -2398,6 +2422,176 @@ function executeBasicAttack(combat, attackerId, targetId) {
     }
   }
 
+  // --- AFFIX on_hit effects from equipped cards (card.affixes array, cat === 'on_hit') ---
+  // These are separate from combatPassive-based on_hit_poison / on_hit_bleed above.
+  // Affixes come from the AFFIX_POOL in rpg-data.js and are rolled onto cards via rollCardAffixes().
+  if (damageToHp > 0 && target.alive && target.hp > 0 && attacker.alive) {
+    var onHitAffixes = getUnitOnHitAffixes(attacker);
+    for (var ohi = 0; ohi < onHitAffixes.length; ohi++) {
+      var ohAff = onHitAffixes[ohi];
+      if (!ohAff || !ohAff.effect) continue;
+      var eff = ohAff.effect;
+      var effType = eff.type;
+
+      // --- on_hit_bleed: chance to apply bleeding DoT ---
+      if (effType === 'on_hit_bleed' && Math.random() < (eff.chance || 0.25)) {
+        if (!target.statusEffects) target.statusEffects = [];
+        target.statusEffects.push({
+          name: 'bleeding', type: 'debuff', duration: eff.duration || 2,
+          tickDamage: eff.tickDamage || 4, sourceId: attackerId,
+        });
+        weaponEffects.push({ type: 'status_applied', status: 'bleeding', targetId: targetId, source: 'affix', affixId: ohAff.id });
+      }
+      // --- on_hit_burn: chance to apply burn DoT ---
+      else if (effType === 'on_hit_burn' && Math.random() < (eff.chance || 0.25)) {
+        if (!target.statusEffects) target.statusEffects = [];
+        target.statusEffects.push({
+          name: 'burned', type: 'debuff', duration: eff.duration || 2,
+          tickDamage: eff.tickDamage || 5, sourceId: attackerId,
+        });
+        weaponEffects.push({ type: 'status_applied', status: 'burned', targetId: targetId, source: 'affix', affixId: ohAff.id });
+      }
+      // --- on_hit_slow: chance to apply slow debuff ---
+      else if (effType === 'on_hit_slow' && Math.random() < (eff.chance || 0.25)) {
+        if (!target.statusEffects) target.statusEffects = [];
+        target.statusEffects.push({
+          name: 'slowed', type: 'debuff', duration: eff.duration || 2,
+          speedReduction: 0.5, sourceId: attackerId,
+        });
+        weaponEffects.push({ type: 'status_applied', status: 'slowed', targetId: targetId, source: 'affix', affixId: ohAff.id });
+      }
+      // --- on_hit_poison: chance to apply poison DoT (respects poison immunity) ---
+      else if (effType === 'on_hit_poison' && Math.random() < (eff.chance || 0.20)) {
+        if (hasImmunity(target, 'poison')) {
+          weaponEffects.push({ type: 'immune', element: 'poison', targetId: targetId, source: 'affix', affixId: ohAff.id });
+        } else {
+          if (!target.statusEffects) target.statusEffects = [];
+          target.statusEffects.push({
+            name: 'poisoned', type: 'debuff', duration: eff.duration || 3,
+            tickDamage: eff.tickDamage || 3, sourceId: attackerId,
+          });
+          weaponEffects.push({ type: 'status_applied', status: 'poisoned', targetId: targetId, source: 'affix', affixId: ohAff.id });
+        }
+      }
+      // --- on_hit_stun: chance to stun (respects CC immunity) ---
+      else if (effType === 'on_hit_stun' && Math.random() < (eff.chance || 0.15)) {
+        if (!hasCCImmunity(target, 'stunned')) {
+          if (!target.statusEffects) target.statusEffects = [];
+          target.statusEffects.push({
+            name: 'stunned', type: 'debuff', duration: eff.duration || 1,
+            skipTurn: true, sourceId: attackerId,
+          });
+          weaponEffects.push({ type: 'status_applied', status: 'stunned', targetId: targetId, source: 'affix', affixId: ohAff.id });
+        }
+      }
+      // --- lifesteal: heal attacker for percentage of damage dealt ---
+      else if (effType === 'lifesteal') {
+        var lsAmt = Math.floor(damageToHp * (eff.value || 0.06));
+        if (lsAmt > 0) {
+          attacker.hp = Math.min(attacker.maxHp, attacker.hp + lsAmt);
+          weaponEffects.push({ type: 'lifesteal', amount: lsAmt, attackerId: attackerId, source: 'affix', affixId: ohAff.id });
+        }
+      }
+      // --- mana_drain_on_hit: steal mana from target and give to attacker ---
+      else if (effType === 'mana_drain_on_hit') {
+        var drainAmt = eff.value || 4;
+        var tMana = (target.combat && target.combat.mana) || 0;
+        var drained = Math.min(drainAmt, tMana);
+        if (target.combat) target.combat.mana = Math.max(0, tMana - drained);
+        if (attacker.combat) attacker.combat.mana = Math.min(attacker.combat.maxMana || 50, (attacker.combat.mana || 0) + drained);
+        if (drained > 0) {
+          weaponEffects.push({ type: 'mana_drain', amount: drained, targetId: targetId, source: 'affix', affixId: ohAff.id });
+        }
+      }
+      // --- mark_on_hit: chance to mark target (increased damage taken) ---
+      else if (effType === 'mark_on_hit' && Math.random() < (eff.chance || 0.20)) {
+        if (!target.statusEffects) target.statusEffects = [];
+        target.statusEffects.push({
+          name: 'marked', type: 'debuff', duration: eff.duration || 2,
+          damageTakenBonus: eff.damageTakenBonus || 0.10, sourceId: attackerId,
+        });
+        weaponEffects.push({ type: 'status_applied', status: 'marked', targetId: targetId, source: 'affix', affixId: ohAff.id });
+      }
+      // --- wound_on_hit: apply healing reduction debuff ---
+      else if (effType === 'wound_on_hit') {
+        if (!target.statusEffects) target.statusEffects = [];
+        target.statusEffects.push({
+          name: 'wounded', type: 'debuff', duration: eff.duration || 3,
+          healingReduction: eff.healing_reduction || 0.30, sourceId: attackerId,
+        });
+        weaponEffects.push({ type: 'status_applied', status: 'wounded', targetId: targetId, source: 'affix', affixId: ohAff.id });
+      }
+      // --- knockback_on_hit: push target away from attacker by N tiles ---
+      else if (effType === 'knockback_on_hit') {
+        if (!hasCCImmunity(target, 'knockback')) {
+          var kbTiles = eff.tiles || 1;
+          var kdx = target.x - attacker.x;
+          var kdy = target.y - attacker.y;
+          // Normalize direction to -1/0/1
+          var knx = kdx === 0 ? 0 : (kdx > 0 ? 1 : -1);
+          var kny = kdy === 0 ? 0 : (kdy > 0 ? 1 : -1);
+          // If target is on same tile as attacker (shouldn't happen), default push direction
+          if (knx === 0 && kny === 0) knx = 1;
+          var kbFloor = combat.floor;
+          var kbFinalX = target.x;
+          var kbFinalY = target.y;
+          if (kbFloor && kbFloor.grid) {
+            var kbGridW = kbFloor.width || kbFloor.grid[0].length;
+            var kbGridH = kbFloor.height || kbFloor.grid.length;
+            for (var kbStep = 0; kbStep < kbTiles; kbStep++) {
+              var kbNextX = kbFinalX + knx;
+              var kbNextY = kbFinalY + kny;
+              if (isWalkableCombat(kbFloor.grid, kbNextX, kbNextY, kbGridW, kbGridH, combat.units) && !getUnitAtPosition(combat, kbNextX, kbNextY)) {
+                kbFinalX = kbNextX;
+                kbFinalY = kbNextY;
+              } else {
+                break;
+              }
+            }
+          }
+          if (kbFinalX !== target.x || kbFinalY !== target.y) {
+            target.x = kbFinalX;
+            target.y = kbFinalY;
+            weaponEffects.push({ type: 'knockback', targetId: targetId, newX: kbFinalX, newY: kbFinalY, source: 'affix', affixId: ohAff.id });
+          }
+        }
+      }
+      // --- push_on_hit: push target away (larger displacement variant) ---
+      else if (effType === 'push_on_hit') {
+        if (!hasCCImmunity(target, 'knockback')) {
+          var pushTiles = eff.tiles || 2;
+          var pdx = target.x - attacker.x;
+          var pdy = target.y - attacker.y;
+          var pnx = pdx === 0 ? 0 : (pdx > 0 ? 1 : -1);
+          var pny = pdy === 0 ? 0 : (pdy > 0 ? 1 : -1);
+          if (pnx === 0 && pny === 0) pnx = 1;
+          var pushFloor = combat.floor;
+          var pushFinalX = target.x;
+          var pushFinalY = target.y;
+          if (pushFloor && pushFloor.grid) {
+            var pushGridW = pushFloor.width || pushFloor.grid[0].length;
+            var pushGridH = pushFloor.height || pushFloor.grid.length;
+            for (var pushStep = 0; pushStep < pushTiles; pushStep++) {
+              var pushNextX = pushFinalX + pnx;
+              var pushNextY = pushFinalY + pny;
+              if (isWalkableCombat(pushFloor.grid, pushNextX, pushNextY, pushGridW, pushGridH, combat.units) && !getUnitAtPosition(combat, pushNextX, pushNextY)) {
+                pushFinalX = pushNextX;
+                pushFinalY = pushNextY;
+              } else {
+                break;
+              }
+            }
+          }
+          if (pushFinalX !== target.x || pushFinalY !== target.y) {
+            target.x = pushFinalX;
+            target.y = pushFinalY;
+            weaponEffects.push({ type: 'knockback', targetId: targetId, newX: pushFinalX, newY: pushFinalY, source: 'affix', affixId: ohAff.id });
+          }
+        }
+      }
+    }
+  }
+
   // --- Passive: mana_on_magic_hit — recover 15% of magic damage taken as mana ---
   // This triggers on the TARGET (defender) when they are hit by a magic attack
   if (damageToHp > 0 && target.alive && target.type === 'player') {
@@ -2794,6 +2988,7 @@ function initCombat(dungeonId, players, enemies, floor, callbacks) {
     units: new Map(),
     tileEffects: [],
     groundZones: [],
+    corpses: [],
     turnTimer: null,
     turnGroup: [],
     pendingActions: new Map(),
@@ -2933,6 +3128,7 @@ function initCombat(dungeonId, players, enemies, floor, callbacks) {
     var enemyUnit = {
       id: eId,
       type: 'enemy',
+      enemyType: e.type || null,
       socketId: null,
       name: e.name || 'Enemy',
       x: e.x,
@@ -4172,13 +4368,34 @@ function startEnemyTurn(combat, unitId) {
   unit.ap = PLAYER_BASE_AP;
   unit.momentumShield = 0;
 
-  // Gather player info for AI
+  // Skeleton summon expiry: decrement turns and expire when done
+  if (unit.isPlayerSummon && unit.turnsLeft !== undefined) {
+    unit.turnsLeft--;
+    if (unit.turnsLeft <= 0) {
+      unit.alive = false;
+      unit.hp = 0;
+      handleUnitDeath(combat, unitId, null);
+      setTimeout(function() { advanceCombat(combat); }, 50);
+      return;
+    }
+  }
+
+  // Gather target info for AI (summons attack enemies; enemies attack players)
   var playerUnits = [];
   var iter = combat.units.values();
   var entry = iter.next();
   while (!entry.done) {
-    if (entry.value.type === 'player' && entry.value.alive) {
-      playerUnits.push(entry.value);
+    var entUnit = entry.value;
+    if (unit.isPlayerSummon) {
+      // Player summon (skeleton): target actual enemies
+      if (entUnit.type === 'enemy' && !entUnit.isPlayerSummon && entUnit.alive) {
+        playerUnits.push(entUnit);
+      }
+    } else {
+      // Normal enemy: target players
+      if (entUnit.type === 'player' && entUnit.alive) {
+        playerUnits.push(entUnit);
+      }
     }
     entry = iter.next();
   }
@@ -4318,6 +4535,184 @@ function fallbackAI(combat, enemy, playerUnits) {
 }
 
 /**
+ * Apply on-hit effects, pierce, and chain from a player summon's attack.
+ * Called after a successful basic attack for units with isPlayerSummon=true.
+ */
+function _applySummonOnHit(combat, attacker, primaryTarget, atkDmg, events) {
+  if (!attacker || !primaryTarget) return;
+  var floor = combat.floor;
+  var grid  = floor ? floor.grid  : null;
+  var gridW = floor ? (floor.width  || (grid && grid[0] && grid[0].length) || 0) : 0;
+  var gridH = floor ? (floor.height || (grid && grid.length) || 0) : 0;
+
+  // 1. Status on-hit effects on primary target
+  if (attacker.onHitEffects && attacker.onHitEffects.length > 0) {
+    if (!primaryTarget.statusEffects) primaryTarget.statusEffects = [];
+    for (var _sohi = 0; _sohi < attacker.onHitEffects.length; _sohi++) {
+      var _soh = attacker.onHitEffects[_sohi];
+      switch (_soh.type) {
+        case 'bleed':
+          if (Math.random() < (_soh.chance || 0.25)) {
+            primaryTarget.statusEffects.push({ name: 'bleeding', type: 'debuff', duration: _soh.duration || 2, tickDamage: _soh.tickDamage || 4, sourceId: attacker.id });
+            events.push({ type: 'summon_on_hit', effect: 'bleeding', unitId: primaryTarget.id, attackerId: attacker.id });
+          }
+          break;
+        case 'burn':
+          if (Math.random() < (_soh.chance || 0.25)) {
+            primaryTarget.statusEffects.push({ name: 'burned', type: 'debuff', duration: 2, tickDamage: Math.max(3, Math.round(atkDmg * 0.15)), sourceId: attacker.id });
+            events.push({ type: 'summon_on_hit', effect: 'burned', unitId: primaryTarget.id, attackerId: attacker.id });
+          }
+          break;
+        case 'slow':
+          if (Math.random() < (_soh.chance || 0.25)) {
+            primaryTarget.statusEffects.push({ name: 'slowed', type: 'debuff', duration: 2, speedReduction: 0.5, sourceId: attacker.id });
+            events.push({ type: 'summon_on_hit', effect: 'slowed', unitId: primaryTarget.id, attackerId: attacker.id });
+          }
+          break;
+        case 'poison':
+          if (Math.random() < (_soh.chance || 0.20) && !hasImmunity(primaryTarget, 'poison')) {
+            primaryTarget.statusEffects.push({ name: 'poisoned', type: 'debuff', duration: 3, tickDamage: Math.max(2, Math.round(atkDmg * 0.10)), sourceId: attacker.id });
+            events.push({ type: 'summon_on_hit', effect: 'poisoned', unitId: primaryTarget.id, attackerId: attacker.id });
+          }
+          break;
+        case 'stun':
+          if (Math.random() < (_soh.chance || 0.15) && !hasCCImmunity(primaryTarget, 'stunned')) {
+            primaryTarget.statusEffects.push({ name: 'stunned', type: 'debuff', duration: _soh.duration || 1, skipTurn: true, sourceId: attacker.id });
+            events.push({ type: 'summon_on_hit', effect: 'stunned', unitId: primaryTarget.id, attackerId: attacker.id });
+          }
+          break;
+        case 'mark':
+          if (Math.random() < (_soh.chance || 0.20)) {
+            primaryTarget.statusEffects.push({ name: 'marked', type: 'debuff', duration: 2, damageTakenBonus: _soh.damageTakenBonus || 0.10, sourceId: attacker.id });
+            events.push({ type: 'summon_on_hit', effect: 'marked', unitId: primaryTarget.id, attackerId: attacker.id });
+          }
+          break;
+        case 'mana_drain':
+          var _sohManaDrain = Math.min(_soh.value || 4, (primaryTarget.combat && primaryTarget.combat.mana) || 0);
+          if (_sohManaDrain > 0 && primaryTarget.combat) {
+            primaryTarget.combat.mana = Math.max(0, (primaryTarget.combat.mana || 0) - _sohManaDrain);
+            events.push({ type: 'summon_on_hit', effect: 'mana_drain', unitId: primaryTarget.id, attackerId: attacker.id, amount: _sohManaDrain });
+          }
+          break;
+        case 'wound':
+          primaryTarget.statusEffects.push({ name: 'wounded', type: 'debuff', duration: 3, healingReduction: _soh.healing_reduction || 0.30, sourceId: attacker.id });
+          events.push({ type: 'summon_on_hit', effect: 'wounded', unitId: primaryTarget.id, attackerId: attacker.id });
+          break;
+        case 'knockback':
+          if (grid && !hasCCImmunity(primaryTarget, 'knockback')) {
+            var _sohKbDx = primaryTarget.x - attacker.x, _sohKbDy = primaryTarget.y - attacker.y;
+            var _sohKbNx = _sohKbDx === 0 ? 0 : (_sohKbDx > 0 ? 1 : -1);
+            var _sohKbNy = _sohKbDy === 0 ? 0 : (_sohKbDy > 0 ? 1 : -1);
+            if (_sohKbNx === 0 && _sohKbNy === 0) _sohKbNx = 1;
+            var _sohKbFX = primaryTarget.x, _sohKbFY = primaryTarget.y;
+            for (var _sohKbt = 0; _sohKbt < (_soh.tiles || 1); _sohKbt++) {
+              var _sohKbNxT = _sohKbFX + _sohKbNx, _sohKbNyT = _sohKbFY + _sohKbNy;
+              if (!isWalkableCombat(grid, _sohKbNxT, _sohKbNyT, gridW, gridH, null) || getUnitAtPosition(combat, _sohKbNxT, _sohKbNyT)) break;
+              _sohKbFX = _sohKbNxT; _sohKbFY = _sohKbNyT;
+            }
+            if (_sohKbFX !== primaryTarget.x || _sohKbFY !== primaryTarget.y) {
+              primaryTarget.x = _sohKbFX; primaryTarget.y = _sohKbFY;
+              events.push({ type: 'summon_knockback', unitId: primaryTarget.id, attackerId: attacker.id, newX: _sohKbFX, newY: _sohKbFY });
+            }
+          }
+          break;
+        case 'push':
+          if (grid && !hasCCImmunity(primaryTarget, 'knockback')) {
+            var _sohPsDx = primaryTarget.x - attacker.x, _sohPsDy = primaryTarget.y - attacker.y;
+            var _sohPsNx = _sohPsDx === 0 ? 0 : (_sohPsDx > 0 ? 1 : -1);
+            var _sohPsNy = _sohPsDy === 0 ? 0 : (_sohPsDy > 0 ? 1 : -1);
+            if (_sohPsNx === 0 && _sohPsNy === 0) _sohPsNx = 1;
+            var _sohPsFX = primaryTarget.x, _sohPsFY = primaryTarget.y;
+            for (var _sohPst = 0; _sohPst < (_soh.tiles || 2); _sohPst++) {
+              var _sohPsNxT = _sohPsFX + _sohPsNx, _sohPsNyT = _sohPsFY + _sohPsNy;
+              if (!isWalkableCombat(grid, _sohPsNxT, _sohPsNyT, gridW, gridH, null) || getUnitAtPosition(combat, _sohPsNxT, _sohPsNyT)) break;
+              _sohPsFX = _sohPsNxT; _sohPsFY = _sohPsNyT;
+            }
+            if (_sohPsFX !== primaryTarget.x || _sohPsFY !== primaryTarget.y) {
+              primaryTarget.x = _sohPsFX; primaryTarget.y = _sohPsFY;
+              events.push({ type: 'summon_knockback', unitId: primaryTarget.id, attackerId: attacker.id, newX: _sohPsFX, newY: _sohPsFY });
+            }
+          }
+          break;
+        case 'pull':
+          if (grid && !hasCCImmunity(primaryTarget, 'knockback')) {
+            var _sohPlDx = attacker.x - primaryTarget.x, _sohPlDy = attacker.y - primaryTarget.y;
+            var _sohPlNx = _sohPlDx === 0 ? 0 : (_sohPlDx > 0 ? 1 : -1);
+            var _sohPlNy = _sohPlDy === 0 ? 0 : (_sohPlDy > 0 ? 1 : -1);
+            var _sohPlFX = primaryTarget.x, _sohPlFY = primaryTarget.y;
+            for (var _sohPlt = 0; _sohPlt < (_soh.tiles || 1); _sohPlt++) {
+              var _sohPlNxT = _sohPlFX + _sohPlNx, _sohPlNyT = _sohPlFY + _sohPlNy;
+              if (_sohPlNxT === attacker.x && _sohPlNyT === attacker.y) break;
+              if (!isWalkableCombat(grid, _sohPlNxT, _sohPlNyT, gridW, gridH, null) || getUnitAtPosition(combat, _sohPlNxT, _sohPlNyT)) break;
+              _sohPlFX = _sohPlNxT; _sohPlFY = _sohPlNyT;
+            }
+            if (_sohPlFX !== primaryTarget.x || _sohPlFY !== primaryTarget.y) {
+              primaryTarget.x = _sohPlFX; primaryTarget.y = _sohPlFY;
+              events.push({ type: 'summon_pull', unitId: primaryTarget.id, attackerId: attacker.id, newX: _sohPlFX, newY: _sohPlFY });
+            }
+          }
+          break;
+      }
+    }
+  }
+
+  // 2. Pierce: hit enemies along the attacker→target direction vector
+  if (attacker.pierceTargets > 0 && grid) {
+    var _pierceDx = primaryTarget.x - attacker.x, _pierceDy = primaryTarget.y - attacker.y;
+    var _pierceNx = _pierceDx === 0 ? 0 : (_pierceDx > 0 ? 1 : -1);
+    var _pierceNy = _pierceDy === 0 ? 0 : (_pierceDy > 0 ? 1 : -1);
+    if (_pierceNx === 0 && _pierceNy === 0) _pierceNx = 1;
+    var _pierceX = primaryTarget.x + _pierceNx, _pierceY = primaryTarget.y + _pierceNy;
+    var _piercedCount = 0;
+    for (var _pri = 0; _pri < 8 && _piercedCount < attacker.pierceTargets; _pri++) {
+      if (_pierceX < 0 || _pierceX >= gridW || _pierceY < 0 || _pierceY >= gridH) break;
+      var _pierceUnit = getUnitAtPosition(combat, _pierceX, _pierceY);
+      if (_pierceUnit && _pierceUnit.alive && _pierceUnit.type === 'enemy' && !_pierceUnit.isPlayerSummon) {
+        var _pierceRes = executeBasicAttack(combat, attacker.id, _pierceUnit.id);
+        if (_pierceRes.success) {
+          if (_pierceRes.targetDied) handleUnitDeath(combat, _pierceUnit.id, attacker.id);
+          events.push({ type: 'summon_pierce', attackerId: attacker.id, targetId: _pierceUnit.id,
+            damage: _pierceRes.damage, actualDamage: _pierceRes.actualDamage,
+            targetDied: _pierceRes.targetDied, targetHp: _pierceRes.targetHp });
+          _piercedCount++;
+        }
+      }
+      _pierceX += _pierceNx; _pierceY += _pierceNy;
+    }
+  }
+
+  // 3. Chain: bounce to nearest unhit enemy at falloff damage
+  if (attacker.chainBounces > 0) {
+    var _chainFalloff = attacker.chainFalloff || 0.6;
+    var _chainHit = [primaryTarget.id];
+    var _chainFrom = primaryTarget;
+    var _chainDmg = (attacker.combat && attacker.combat.atk) ? attacker.combat.atk : atkDmg;
+    for (var _cbi = 0; _cbi < attacker.chainBounces; _cbi++) {
+      _chainDmg = Math.round(_chainDmg * _chainFalloff);
+      if (_chainDmg < 1) break;
+      var _chainNearest = null, _chainNearestDist = 99;
+      combat.units.forEach(function(u) {
+        if (!u.alive || u.type !== 'enemy' || u.isPlayerSummon) return;
+        if (_chainHit.indexOf(u.id) !== -1) return;
+        var _cd = Math.abs(u.x - _chainFrom.x) + Math.abs(u.y - _chainFrom.y);
+        if (_cd <= 6 && _cd < _chainNearestDist) { _chainNearest = u; _chainNearestDist = _cd; }
+      });
+      if (!_chainNearest) break;
+      _chainHit.push(_chainNearest.id);
+      var _chainDef = (_chainNearest.combat && _chainNearest.combat.def) ? _chainNearest.combat.def : 0;
+      var _chainActual = Math.max(1, _chainDmg - _chainDef);
+      _chainNearest.hp = Math.max(0, (_chainNearest.hp || 0) - _chainActual);
+      var _chainDied = _chainNearest.hp <= 0;
+      if (_chainDied) { _chainNearest.alive = false; handleUnitDeath(combat, _chainNearest.id, attacker.id); }
+      events.push({ type: 'summon_chain', attackerId: attacker.id, targetId: _chainNearest.id,
+        damage: _chainDmg, actualDamage: _chainActual, targetDied: _chainDied,
+        targetHp: _chainNearest.hp, bounce: _cbi + 1 });
+      _chainFrom = _chainNearest;
+    }
+  }
+}
+
+/**
  * Execute an AI-decided action for an enemy unit.
  * Returns array of event objects for broadcasting.
  */
@@ -4376,6 +4771,12 @@ function executeAIAction(combat, enemy, action, playerUnits) {
             lifestealHeal: atkResult.lifestealHeal || 0,
             reflectDamage: atkResult.reflectDamage || 0,
           });
+
+          // Summon on-hit effects (pierce, chain, status)
+          if (enemy.isPlayerSummon && !atkResult.dodged && atkResult.actualDamage > 0) {
+            var _atkSohTarget = combat.units.get(action.targetId);
+            if (_atkSohTarget) _applySummonOnHit(combat, enemy, _atkSohTarget, atkResult.actualDamage, events);
+          }
         }
       }
       break;
@@ -4437,6 +4838,12 @@ function executeAIAction(combat, enemy, action, playerUnits) {
                 lifestealHeal: aResult.lifestealHeal || 0,
                 reflectDamage: aResult.reflectDamage || 0,
               });
+
+              // Summon on-hit effects (pierce, chain, status)
+              if (enemy.isPlayerSummon && !aResult.dodged && aResult.actualDamage > 0) {
+                var _maSohTarget = combat.units.get(action.targetId);
+                if (_maSohTarget) _applySummonOnHit(combat, enemy, _maSohTarget, aResult.actualDamage, events);
+              }
             }
           }
         }
@@ -5185,6 +5592,11 @@ function handleUnitDeath(combat, unitId, killerId) {
       checkPhylacteries(combat);
     }
 
+    // Corpse tracking: leave a corpse at the enemy's position for corpse_explosion
+    if (!unit.isPlayerSummon && !unit.isAdd && combat.corpses) {
+      combat.corpses.push({ x: unit.x, y: unit.y, id: unitId, name: unit.name });
+    }
+
     if (combat.callbacks.broadcastToFloor) {
       combat.callbacks.broadcastToFloor('tc_combat_unit_died', {
         combatId: combat.id,
@@ -5217,7 +5629,7 @@ function checkCombatEnd(combat) {
 
     if (!unit.alive) continue;
     if (unit.type === 'player') playersAlive++;
-    else enemiesAlive++;
+    else if (!unit.isPlayerSummon) enemiesAlive++;
   }
 
   if (enemiesAlive === 0 && playersAlive > 0) return 'victory';
@@ -5252,7 +5664,7 @@ function endCombat(combat, result) {
       var unit = entry.value;
       entry = iter.next();
 
-      if (unit.type === 'enemy' && !unit.alive) {
+      if (unit.type === 'enemy' && !unit.alive && !unit.isPlayerSummon) {
         killedEnemies.push({
           id: unit.id,
           name: unit.name,
@@ -5266,6 +5678,19 @@ function endCombat(combat, result) {
         // Delegate reward distribution to dungeon handler via callback
         if (combat.callbacks.awardKillRewards) {
           combat.callbacks.awardKillRewards(unit);
+        }
+
+        // Necromancy XP: 5 XP per undead enemy killed, to all alive players
+        if (unit.enemyType === 'undead' && combat.callbacks.addSkillXp) {
+          var undeadKillIter = combat.units.values();
+          var undeadKillEntry = undeadKillIter.next();
+          while (!undeadKillEntry.done) {
+            var undeadKillUnit = undeadKillEntry.value;
+            undeadKillEntry = undeadKillIter.next();
+            if (undeadKillUnit.type === 'player' && undeadKillUnit.alive && undeadKillUnit.socketId) {
+              combat.callbacks.addSkillXp(undeadKillUnit.socketId, 'necromancy', 5);
+            }
+          }
         }
       }
     }
@@ -5669,13 +6094,30 @@ function handleNPCHealAction(combat, unit, data) {
  * Handle an ability action from a player.
  */
 function handleAbilityAction(combat, unit, data) {
-  if (!data || !data.cardId) {
-    return { success: false, error: 'Ability requires cardId' };
+  if (!data) {
+    return { success: false, error: 'Ability requires cardId or abilityIndex' };
   }
-  var targetX = (data.targetX !== undefined) ? Math.floor(data.targetX) : unit.x;
-  var targetY = (data.targetY !== undefined) ? Math.floor(data.targetY) : unit.y;
 
-  var abilityResult = executeAbility(combat, unit.id, data.cardId, targetX, targetY);
+  // Support both cardId (direct) and abilityIndex (client sends 1-based index)
+  var resolvedCardId = data.cardId;
+  if (!resolvedCardId && data.abilityIndex !== undefined) {
+    var eqCards = unit.equippedCards || [];
+    var idx = Math.floor(data.abilityIndex) - 1; // client sends 1-based
+    if (idx >= 0 && idx < eqCards.length && eqCards[idx]) {
+      resolvedCardId = eqCards[idx].cardId || eqCards[idx].id;
+    }
+  }
+  if (!resolvedCardId) {
+    return { success: false, error: 'Ability requires cardId or valid abilityIndex' };
+  }
+
+  // Support both x/y and targetX/targetY coordinate naming
+  var targetX = (data.targetX !== undefined) ? Math.floor(data.targetX) :
+                (data.x !== undefined) ? Math.floor(data.x) : unit.x;
+  var targetY = (data.targetY !== undefined) ? Math.floor(data.targetY) :
+                (data.y !== undefined) ? Math.floor(data.y) : unit.y;
+
+  var abilityResult = executeAbility(combat, unit.id, resolvedCardId, targetX, targetY);
   if (!abilityResult.success) {
     return { success: false, error: abilityResult.reason };
   }
@@ -5684,7 +6126,7 @@ function handleAbilityAction(combat, unit, data) {
   var card = null;
   var equippedCards = unit.equippedCards || [];
   for (var ci = 0; ci < equippedCards.length; ci++) {
-    if (equippedCards[ci] && (equippedCards[ci].id === data.cardId || equippedCards[ci].cardId === data.cardId)) {
+    if (equippedCards[ci] && (equippedCards[ci].id === resolvedCardId || equippedCards[ci].cardId === resolvedCardId)) {
       card = equippedCards[ci];
       break;
     }
@@ -6308,6 +6750,20 @@ function serializeUnits(combat) {
       }),
       archetype: u.archetype,
       isBoss: u.isBoss || false,
+      equippedCards: (u.equippedCards || []).map(function(c) {
+        if (!c) return null;
+        return {
+          cardId: c.cardId || c.id,
+          name: c.name,
+          range: c.range || 1,
+          combatType: c.combatType || 'melee',
+          manaCost: c.manaCost || 0,
+          cooldown: c.cooldown || 0,
+          targetType: c.targetType || 'enemy',
+          aoeRadius: c.aoeRadius || 0,
+          type: c.type,
+        };
+      }).filter(Boolean),
     });
   }
 
@@ -6848,6 +7304,30 @@ function executeAbility(combat, unitId, abilityCardId, targetX, targetY) {
         }
       }
 
+      // Corpse Explosion: consume nearby corpses for +15 flat damage each
+      var _corpseBonus = 0;
+      if (combatCard.cardId === 'corpse_explosion' && combat.corpses && combat.corpses.length > 0) {
+        var _consumedCorpses = [];
+        var _ceRadius = combatCard.aoeRadius || 2;
+        for (var ci = combat.corpses.length - 1; ci >= 0; ci--) {
+          var _corp = combat.corpses[ci];
+          var _corpDist = Math.abs(_corp.x - targetX) + Math.abs(_corp.y - targetY);
+          if (_corpDist <= _ceRadius) {
+            _consumedCorpses.push(_corp);
+            combat.corpses.splice(ci, 1);
+          }
+        }
+        _corpseBonus = _consumedCorpses.length * 15;
+        if (_consumedCorpses.length > 0) {
+          effects.push({
+            type: 'corpse_consumed',
+            corpses: _consumedCorpses.map(function(c) { return c.name; }),
+            bonusDamage: _corpseBonus,
+          });
+        }
+      }
+
+      var _abilityHitCount = 0;
       for (var dti = 0; dti < damageTargets.length; dti++) {
         var target = damageTargets[dti];
         // Support card-specific scaling stat
@@ -6857,7 +7337,7 @@ function executeAbility(combat, unitId, abilityCardId, targetX, targetY) {
         if (scalingStat === 'might') scalingValue = rpgStats.might || 5;
         else if (scalingStat === 'finesse') scalingValue = rpgStats.finesse || 5;
         else if (scalingStat === 'resolve') scalingValue = rpgStats.resolve || 5;
-        var baseDmg = (combatCard.baseDamage || 0) + scalingValue * scalingFactor;
+        var baseDmg = (combatCard.baseDamage || 0) + scalingValue * scalingFactor + _corpseBonus;
         // Apply magic damage multiplier for non-physical abilities
         if (scalingStat === 'acumen') {
           baseDmg = baseDmg * magicMult;
@@ -7063,6 +7543,7 @@ function executeAbility(combat, unitId, abilityCardId, targetX, targetY) {
         // Apply damage
         if (damage > 0) {
           target.hp -= damage;
+          _abilityHitCount++;
         }
 
         // Grant bloodlust when taking damage (ability direct hit)
@@ -7365,6 +7846,14 @@ function executeAbility(combat, unitId, abilityCardId, targetX, targetY) {
           pulledTo: pulledTo,
           thrownTo: thrownTo || null,
         });
+      }
+
+      // Necromancy skill XP: award 3 XP per use of a necromancy-tagged ability that hits
+      if (unit.type === 'player' && unit.socketId && _abilityHitCount > 0 && combat.callbacks.addSkillXp) {
+        var _abTags = combatCard.tags || [];
+        if (_abTags.indexOf('necromancy') !== -1) {
+          combat.callbacks.addSkillXp(unit.socketId, 'necromancy', 3);
+        }
       }
 
       // --- Shatter Mind: destroy all clones and deal burst damage per clone to target ---
@@ -8687,6 +9176,178 @@ function executeAbility(combat, unitId, abilityCardId, targetX, targetY) {
         }
       } else {
         var tileResults = combatTiles.createTileEffect(combat, targetX, targetY, tileType, unitId);
+
+        // --- TURRET bonuses: scale turret from equipped passive cards + gnome racial ---
+        if (tileType === 'TURRET' && tileResults.length > 0) {
+          var turretEffect = null;
+          for (var tfi = 0; tfi < tileResults.length; tfi++) {
+            if (tileResults[tfi].type === 'TURRET') { turretEffect = tileResults[tfi]; break; }
+          }
+          if (turretEffect) {
+            // Summon bonuses from equipped passive cards (turret_upgrade, master_engineer, etc.)
+            var summonDmgBonus = getUnitCombatPassiveTotal(unit, 'summon_damage_bonus');
+            var summonHpBonus  = getUnitCombatPassiveTotal(unit, 'summon_hp_bonus');
+            // Also check card effects array for summon_damage_bonus / summon_hp_bonus
+            summonDmgBonus += getCardEffectTotal(unit, 'summon_damage_bonus');
+            summonHpBonus  += getCardEffectTotal(unit, 'summon_hp_bonus');
+
+            // Gnome racial bonus: Tinker Savant — +50% turret damage, +20% HP, +1 duration
+            var isGnomeTurret  = (unit.race === 'gnome');
+            var gnomeDmgBonus  = isGnomeTurret ? 0.50 : 0;
+            var gnomeHpBonus   = isGnomeTurret ? 0.20 : 0;
+            var gnomeDurBonus  = isGnomeTurret ? 1    : 0;
+
+            var baseTurrDmg = combatTiles.TILE_EFFECTS.TURRET.damage || 6;
+            var baseTurrHp  = combatTiles.TILE_EFFECTS.TURRET.hp     || 20;
+            turretEffect.damage    = Math.max(1, Math.round(baseTurrDmg * (1 + summonDmgBonus + gnomeDmgBonus)));
+            turretEffect.currentHp = Math.round(baseTurrHp  * (1 + summonHpBonus  + gnomeHpBonus));
+            turretEffect.maxHp     = turretEffect.currentHp;
+            turretEffect.range     = combatTiles.TILE_EFFECTS.TURRET.range || 2;
+            if (gnomeDurBonus > 0 && turretEffect.duration !== -1 && turretEffect.duration > 0) {
+              turretEffect.duration += gnomeDurBonus;
+            }
+            // Apply turret-specific affixes from the card instance
+            if (card.affixes) {
+              for (var tafi = 0; tafi < card.affixes.length; tafi++) {
+                var taff = card.affixes[tafi];
+                if (!taff.effect) continue;
+                if (taff.effect.type === 'turret_extra_target') {
+                  turretEffect.targets = (turretEffect.targets || 1) + Math.round(taff.effect.value * taff.stacks);
+                } else if (taff.effect.type === 'turret_lifedrain') {
+                  turretEffect.lifedrain = (turretEffect.lifedrain || 0) + (taff.effect.value * taff.stacks);
+                }
+              }
+            }
+            // Cap targets at 3
+            if (turretEffect.targets > 3) turretEffect.targets = 3;
+
+            // --- Wire card.effects[] elemental + combat effects into turret instance ---
+            // card.effects[] already merges: base effects + affix effects (xstacks) + mutations.
+            var _turrElemBonuses = [];
+            var _turrCritBonus   = 0;
+            var _cardEffects     = card.effects || [];
+            for (var _cef = 0; _cef < _cardEffects.length; _cef++) {
+              var _ef = _cardEffects[_cef];
+              if (!_ef || !_ef.type) continue;
+              if (_ef.type === 'add_flat_damage') {
+                _turrElemBonuses.push({
+                  bonusType:  'flat',
+                  element:    _ef.element || 'physical',
+                  value:      typeof _ef.value === 'number' ? Math.round(_ef.value) : 0,
+                  slowChance: _ef.slow_chance || 0,
+                  undeadMult: _ef.undead_mult || 1,
+                });
+              } else if (_ef.type === 'add_dot') {
+                _turrElemBonuses.push({
+                  bonusType: 'dot',
+                  element:   _ef.element || 'poison',
+                  value:     typeof _ef.value === 'number' ? _ef.value : 4,
+                  duration:  _ef.duration || 3,
+                });
+              } else if (_ef.type === 'random_element_convert') {
+                var _rndEls = ['fire', 'ice', 'lightning', 'poison', 'holy', 'shadow'];
+                var _rndEl  = _rndEls[Math.floor(Math.random() * _rndEls.length)];
+                // store as a base element override — processed in combat-tiles
+                turretEffect.elementOverride = _rndEl;
+              } else if (_ef.type === 'crit_bonus') {
+                _turrCritBonus += typeof _ef.value === 'number' ? _ef.value : 0;
+              } else if (_ef.type === 'lifesteal') {
+                // Stack into existing lifedrain
+                turretEffect.lifedrain = (turretEffect.lifedrain || 0) + (typeof _ef.value === 'number' ? _ef.value : 0);
+              } else if (_ef.type === 'on_hit_bleed') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'bleed', chance: _ef.chance || 0.25, duration: _ef.duration || 2, tickDamage: _ef.tickDamage || 4 });
+              } else if (_ef.type === 'on_hit_burn') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'burn', chance: _ef.chance || 0.25 });
+              } else if (_ef.type === 'on_hit_slow') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'slow', chance: _ef.chance || 0.25 });
+              } else if (_ef.type === 'on_hit_poison') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'poison', chance: _ef.chance || 0.20 });
+              } else if (_ef.type === 'on_hit_stun') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'stun', chance: _ef.chance || 0.15, duration: _ef.duration || 1 });
+              } else if (_ef.type === 'knockback_on_hit') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'knockback', tiles: _ef.tiles || 1 });
+              } else if (_ef.type === 'push_on_hit') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'push', tiles: _ef.tiles || 2 });
+              } else if (_ef.type === 'pull_on_hit') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'pull', tiles: _ef.tiles || 1 });
+              } else if (_ef.type === 'mark_on_hit') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'mark', chance: _ef.chance || 0.20, damageTakenBonus: _ef.damageTakenBonus || 0.10 });
+              } else if (_ef.type === 'mana_drain_on_hit') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'mana_drain', value: _ef.value || 4 });
+              } else if (_ef.type === 'wound_on_hit') {
+                if (!turretEffect.onHitEffects) turretEffect.onHitEffects = [];
+                turretEffect.onHitEffects.push({ type: 'wound', healing_reduction: _ef.healing_reduction || 0.30 });
+              } else if (_ef.type === 'pierce_on_hit') {
+                turretEffect.pierceTargets = (turretEffect.pierceTargets || 0) + (_ef.targets || 1);
+              } else if (_ef.type === 'chain_on_hit') {
+                // Take the higher bounce count if multiple chain affixes
+                if ((_ef.bounces || 1) > (turretEffect.chainBounces || 0)) {
+                  turretEffect.chainBounces = _ef.bounces || 1;
+                  turretEffect.chainFalloff = _ef.damageFalloff || 0.6;
+                }
+              }
+            }
+            if (_turrElemBonuses.length > 0) turretEffect.elementBonuses = _turrElemBonuses;
+            if (_turrCritBonus > 0)          turretEffect.critChance      = Math.min(_turrCritBonus, 0.75);
+          }
+        }
+
+        // --- HEAL_TURRET / SHIELD_TURRET bonuses: HP scaling + gnome racial ---
+        if ((tileType === 'HEAL_TURRET' || tileType === 'SHIELD_TURRET') && tileResults.length > 0) {
+          var structEffect = null;
+          for (var sfi = 0; sfi < tileResults.length; sfi++) {
+            if (tileResults[sfi].type === tileType) { structEffect = tileResults[sfi]; break; }
+          }
+          if (structEffect) {
+            var sSummonHpBonus = getUnitCombatPassiveTotal(unit, 'summon_hp_bonus') + getCardEffectTotal(unit, 'summon_hp_bonus');
+            var sGnomeHpBonus  = (unit.race === 'gnome') ? 0.20 : 0;
+            var sGnomeDurBonus = (unit.race === 'gnome') ? 1    : 0;
+            var sBaseHp = combatTiles.TILE_EFFECTS[tileType].hp;
+            structEffect.currentHp = Math.round(sBaseHp * (1 + sSummonHpBonus + sGnomeHpBonus));
+            structEffect.maxHp     = structEffect.currentHp;
+            if (sGnomeDurBonus > 0 && structEffect.duration > 0) {
+              structEffect.duration += sGnomeDurBonus;
+            }
+            // Gnome racial: +50% heal or +50% shield pulse
+            if (unit.race === 'gnome') {
+              if (tileType === 'HEAL_TURRET' && structEffect.heal) {
+                structEffect.heal = Math.round(structEffect.heal * 1.5);
+              } else if (tileType === 'SHIELD_TURRET' && structEffect.shield) {
+                structEffect.shield = Math.round(structEffect.shield * 1.5);
+              }
+            }
+            // automated_triage passive: +50% heal bonus (flat and percent)
+            var triageBonus = getCardEffectTotal(unit, 'automated_triage');
+            if (triageBonus > 0 && tileType === 'HEAL_TURRET') {
+              if (structEffect.heal)        structEffect.heal        = Math.round(structEffect.heal        * (1 + 0.50 * triageBonus));
+              if (structEffect.healPercent) structEffect.healPercent = Math.round(structEffect.healPercent * (1 + 0.50 * triageBonus) * 1000) / 1000;
+            }
+            // turret_fortify_bonus affix (SHIELD_TURRET) + turret_extra_target affix (HEAL_TURRET multi-heal)
+            if (card.affixes) {
+              for (var safi = 0; safi < card.affixes.length; safi++) {
+                var saff = card.affixes[safi];
+                if (!saff.effect) continue;
+                if (saff.effect.type === 'turret_fortify_bonus' && tileType === 'SHIELD_TURRET' && structEffect.shield) {
+                  structEffect.shield = Math.round(structEffect.shield * (1 + saff.effect.value * saff.stacks));
+                } else if (saff.effect.type === 'turret_extra_target' && tileType === 'HEAL_TURRET') {
+                  // Heal more allies per tick (default 1; each extra_target affix adds 1)
+                  structEffect.targets = Math.min((structEffect.targets || 1) + Math.round(saff.effect.value * saff.stacks), 4);
+                }
+              }
+            }
+          }
+        }
+
         var chainReactions = [];
         for (var tri = 0; tri < tileResults.length; tri++) {
           var tr = tileResults[tri];
@@ -8706,53 +9367,209 @@ function executeAbility(combat, unitId, abilityCardId, targetX, targetY) {
     }
 
     case 'summon': {
-      // --- Mirror Image: create illusion clones ---
-      var summonCount = combatCard.summonCount || 2;
-      var summonHp = combatCard.summonHp || 1;
-      var summonDmg = combatCard.summonDamage || 5;
-      var summonDur = combatCard.summonDuration || 4;
-      var cloneList = _playerClones.get(unitId) || [];
-      var adjSummonTiles = getAdjacentTiles(combat, unit.x, unit.y);
-      var summonedCount = 0;
-      for (var smi = 0; smi < adjSummonTiles.length && summonedCount < summonCount; smi++) {
-        var smTile = adjSummonTiles[smi];
-        if (!isWalkableCombat(combat, smTile.x, smTile.y) || getUnitAtPosition(combat, smTile.x, smTile.y)) continue;
-        var cloneId = unitId + '_clone_' + Date.now() + '_' + summonedCount;
-        var cloneUnit = {
-          id: cloneId,
-          type: unit.type,
-          x: smTile.x,
-          y: smTile.y,
-          hp: summonHp,
-          maxHp: summonHp,
-          atk: summonDmg,
-          alive: true,
-          isClone: true,
-          ownerId: unitId,
-          turnsLeft: summonDur,
-          name: unit.name + ' Clone',
-          statusEffects: [],
-          equippedCards: [],
-          combat: { def: 0, atkRange: 1 },
-          mp: 0,
-          ap: 0,
-          rp: 0,
-          ct: 0,
-        };
-        combat.units.set(cloneId, cloneUnit);
-        cloneList.push({ cloneId: cloneId, hp: summonHp, damage: summonDmg, turnsLeft: summonDur });
-        summonedCount++;
-        effects.push({
-          type: 'summon',
-          unitId: cloneId,
-          ownerId: unitId,
-          x: smTile.x,
-          y: smTile.y,
-          hp: summonHp,
-          name: cloneUnit.name,
-        });
+      if (combatCard.summonType === 'skeleton') {
+        // --- Raise Skeleton: spawn a skeleton ally that fights enemies ---
+        var skelHp  = combatCard.summonHp     || 40;
+        var skelDmg = combatCard.summonDamage || 10;
+        var skelDur = combatCard.summonDuration || 30;
+
+        // 1. Rarity scaling: summonHp/summonDamage are top-level template fields and bypass
+        //    generateCardInstance scaling.  Apply it manually based on card.rarity vs template base.
+        var _skelRarityTable = { common: 1.0, uncommon: 2.0, rare: 4.0, ultra_rare: 7.0,
+                                 mythic_rare: 7.0, legendary: 7.0, godly: 7.0, relic: 7.0 };
+        var _skelBaseScale   = _skelRarityTable[template.rarity  || 'uncommon'] || 2.0;
+        var _skelRolledScale = _skelRarityTable[card.rarity      || 'uncommon'] || 2.0;
+        var _skelRarityMult  = _skelRolledScale / _skelBaseScale;
+        if (_skelRarityMult > 1.0) {
+          skelHp  = Math.round(skelHp  * _skelRarityMult);
+          skelDmg = Math.round(skelDmg * _skelRarityMult);
+        }
+
+        // 2. Acumen scaling: same formula as ability damage (base × (1 + stat × factor))
+        var _skelAcumen  = (unit.combat && unit.combat.acumen) ? unit.combat.acumen : 5;
+        var _skelSclFact = combatCard.scalingFactor || 0.3;
+        skelDmg = Math.round(skelDmg * (1 + _skelAcumen * _skelSclFact));
+
+        // 3. Summon bonuses from equipped passive cards (same as turret_upgrade pattern)
+        var _skelSummonDmgBonus = getUnitCombatPassiveTotal(unit, 'summon_damage_bonus') +
+                                  getCardEffectTotal(unit, 'summon_damage_bonus');
+        var _skelSummonHpBonus  = getUnitCombatPassiveTotal(unit, 'summon_hp_bonus') +
+                                  getCardEffectTotal(unit, 'summon_hp_bonus');
+        if (_skelSummonDmgBonus > 0) skelDmg = Math.round(skelDmg * (1 + _skelSummonDmgBonus));
+        if (_skelSummonHpBonus  > 0) skelHp  = Math.round(skelHp  * (1 + _skelSummonHpBonus));
+
+        // 4. Element, range, and archetype from card.effects[] and card.affixes
+        //    card.effects[] already merges base + affix + mutation effects at draw time.
+        var _skelElement   = null;   // null → physical damage
+        var _skelRange     = 1;
+        var _skelArchetype = 'bruiser';
+        var _skelName      = 'Raised Skeleton';
+
+        // 5. Scan card.effects[] (base + merged affixes/mutations) for element, on-hit, pierce, chain
+        //    Mirrors the turret scaling pass exactly.
+        var _skelOnHitEffects  = [];
+        var _skelPierceTargets = 0;
+        var _skelChainBounces  = 0;
+        var _skelChainFalloff  = 0.6;
+
+        var _skelCardEffects = card.effects || [];
+        for (var _scef = 0; _scef < _skelCardEffects.length; _scef++) {
+          var _sef = _skelCardEffects[_scef];
+          if (!_sef || !_sef.type) continue;
+          switch (_sef.type) {
+            case 'add_flat_damage':
+              if (_sef.element && !_skelElement) { _skelElement = _sef.element; skelDmg += (typeof _sef.value === 'number') ? Math.round(_sef.value) : 0; }
+              break;
+            case 'on_hit_bleed':      _skelOnHitEffects.push({ type: 'bleed',      chance: _sef.chance || 0.25, duration: _sef.duration || 2, tickDamage: _sef.tickDamage || 4 }); break;
+            case 'on_hit_burn':       _skelOnHitEffects.push({ type: 'burn',       chance: _sef.chance || 0.25 }); break;
+            case 'on_hit_slow':       _skelOnHitEffects.push({ type: 'slow',       chance: _sef.chance || 0.25 }); break;
+            case 'on_hit_poison':     _skelOnHitEffects.push({ type: 'poison',     chance: _sef.chance || 0.20 }); break;
+            case 'on_hit_stun':       _skelOnHitEffects.push({ type: 'stun',       chance: _sef.chance || 0.15, duration: _sef.duration || 1 }); break;
+            case 'mark_on_hit':       _skelOnHitEffects.push({ type: 'mark',       chance: _sef.chance || 0.20, damageTakenBonus: _sef.damageTakenBonus || 0.10 }); break;
+            case 'mana_drain_on_hit': _skelOnHitEffects.push({ type: 'mana_drain', value:  _sef.value || 4 }); break;
+            case 'wound_on_hit':      _skelOnHitEffects.push({ type: 'wound',      healing_reduction: _sef.healing_reduction || 0.30 }); break;
+            case 'knockback_on_hit':  _skelOnHitEffects.push({ type: 'knockback',  tiles: _sef.tiles || 1 }); break;
+            case 'push_on_hit':       _skelOnHitEffects.push({ type: 'push',       tiles: _sef.tiles || 2 }); break;
+            case 'pull_on_hit':       _skelOnHitEffects.push({ type: 'pull',       tiles: _sef.tiles || 1 }); break;
+            case 'pierce_on_hit':     _skelPierceTargets += (_sef.targets || 1); break;
+            case 'chain_on_hit':
+              if ((_sef.bounces || 1) > _skelChainBounces) {
+                _skelChainBounces = _sef.bounces || 1;
+                _skelChainFalloff = _sef.damageFalloff || 0.6;
+              }
+              break;
+          }
+        }
+
+        // card.affixes — individual rolled affixes with .effect payload (not yet merged into effects[])
+        var _skelAffixes = card.affixes || [];
+        for (var _safi = 0; _safi < _skelAffixes.length; _safi++) {
+          var _saff = _skelAffixes[_safi];
+          if (!_saff || !_saff.effect) continue;
+          var _se = _saff.effect;
+          if (_se.type === 'add_flat_damage' && _se.element && !_skelElement) {
+            _skelElement = _se.element;
+            skelDmg += (typeof _se.value === 'number') ? Math.round(_se.value) : 0;
+          } else if (_se.type === 'range_bonus' || _se.type === 'summon_ranged') {
+            _skelRange     = 2;
+            _skelArchetype = 'ranged';
+            _skelName      = 'Raised Archer Skeleton';
+          }
+        }
+
+        // Necromancy shadow default: shadow tag → physical attacks count as shadow magic
+        if (!_skelElement && template.tags && template.tags.indexOf('shadow') !== -1) {
+          _skelElement = 'shadow';
+        }
+
+        var skelSpeed = 7;
+        var adjSkelTiles = getAdjacentTiles(combat, unit.x, unit.y);
+        var skelSpawned = 0;
+        for (var ski = 0; ski < adjSkelTiles.length && skelSpawned < 1; ski++) {
+          var skelTile = adjSkelTiles[ski];
+          if (!isWalkableCombat(combat, skelTile.x, skelTile.y) || getUnitAtPosition(combat, skelTile.x, skelTile.y)) continue;
+          var skelId = unitId + '_skeleton_' + Date.now();
+          var skelCombat = { atk: skelDmg, def: combatCard.summonArmor || 5, range: _skelRange, magicResist: 0, speed: skelSpeed };
+          if (_skelElement) skelCombat.element = _skelElement;
+          var skelUnit = {
+            id: skelId,
+            type: 'enemy',          // Uses enemy AI loop for autonomous action
+            enemyType: 'undead',
+            isPlayerSummon: true,   // Marks as friendly — not counted as enemy
+            ownerId: unitId,
+            name: _skelName,
+            x: skelTile.x,
+            y: skelTile.y,
+            hp: skelHp,
+            maxHp: skelHp,
+            mp: 2,
+            ap: PLAYER_BASE_AP,
+            rp: 0,
+            ct: Math.floor(Math.random() * 20),
+            speed: skelSpeed,
+            alive: true,
+            statusEffects: [],
+            equippedCards: [],
+            abilities: [],
+            archetype: _skelArchetype,
+            isBoss: false,
+            invincible: false,
+            xp: 0,
+            gold: 0,
+            turnsLeft: skelDur,
+            combat: skelCombat,
+          };
+          if (_skelOnHitEffects.length > 0) skelUnit.onHitEffects = _skelOnHitEffects;
+          if (_skelPierceTargets > 0)       skelUnit.pierceTargets = _skelPierceTargets;
+          if (_skelChainBounces  > 0)       { skelUnit.chainBounces = _skelChainBounces; skelUnit.chainFalloff = _skelChainFalloff; }
+          combat.units.set(skelId, skelUnit);
+          skelSpawned++;
+          effects.push({
+            type: 'summon',
+            summonKind: 'skeleton',
+            unitId: skelId,
+            ownerId: unitId,
+            x: skelTile.x,
+            y: skelTile.y,
+            hp: skelHp,
+            name: _skelName,
+            archetype: _skelArchetype,
+            element: _skelElement,
+          });
+          // Necromancy XP for successfully summoning
+          if (unit.socketId && combat.callbacks.addSkillXp) {
+            combat.callbacks.addSkillXp(unit.socketId, 'necromancy', 10);
+          }
+        }
+      } else {
+        // --- Mirror Image: create illusion clones ---
+        var summonCount = combatCard.summonCount || 2;
+        var summonHp = combatCard.summonHp || 1;
+        var summonDmg = combatCard.summonDamage || 5;
+        var summonDur = combatCard.summonDuration || 4;
+        var cloneList = _playerClones.get(unitId) || [];
+        var adjSummonTiles = getAdjacentTiles(combat, unit.x, unit.y);
+        var summonedCount = 0;
+        for (var smi = 0; smi < adjSummonTiles.length && summonedCount < summonCount; smi++) {
+          var smTile = adjSummonTiles[smi];
+          if (!isWalkableCombat(combat, smTile.x, smTile.y) || getUnitAtPosition(combat, smTile.x, smTile.y)) continue;
+          var cloneId = unitId + '_clone_' + Date.now() + '_' + summonedCount;
+          var cloneUnit = {
+            id: cloneId,
+            type: unit.type,
+            x: smTile.x,
+            y: smTile.y,
+            hp: summonHp,
+            maxHp: summonHp,
+            atk: summonDmg,
+            alive: true,
+            isClone: true,
+            ownerId: unitId,
+            turnsLeft: summonDur,
+            name: unit.name + ' Clone',
+            statusEffects: [],
+            equippedCards: [],
+            combat: { def: 0, atkRange: 1 },
+            mp: 0,
+            ap: 0,
+            rp: 0,
+            ct: 0,
+          };
+          combat.units.set(cloneId, cloneUnit);
+          cloneList.push({ cloneId: cloneId, hp: summonHp, damage: summonDmg, turnsLeft: summonDur });
+          summonedCount++;
+          effects.push({
+            type: 'summon',
+            unitId: cloneId,
+            ownerId: unitId,
+            x: smTile.x,
+            y: smTile.y,
+            hp: summonHp,
+            name: cloneUnit.name,
+          });
+        }
+        _playerClones.set(unitId, cloneList);
       }
-      _playerClones.set(unitId, cloneList);
       break;
     }
 
@@ -9217,10 +10034,12 @@ function selectBossTarget(combat, actionIndex) {
   }
 }
 
+var _spawnAddSeq = 0;
+
 function spawnCombatAdd(combat, addTemplate, count) {
   var spawned = [];
   for (var i = 0; i < count; i++) {
-    var addId = 'add_' + Date.now() + '_' + i;
+    var addId = 'add_' + Date.now() + '_' + (++_spawnAddSeq);
     var add = {
       id: addId,
       type: 'enemy',
@@ -9633,6 +10452,66 @@ function executeLichRaidBossTurn(combat) {
 }
 
 // ---------------------------------------------------------------------------
+// useCardAbility — convenience wrapper for socket handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * High-level wrapper for using an active card ability during combat.
+ * Validates the player is in combat, finds the combat instance, and delegates
+ * to executeAbility. Returns a result object suitable for socket emission.
+ *
+ * @param {string} socketId        - The player's socket ID
+ * @param {string} cardInstanceId  - The card's instanceId (from equipped cards)
+ * @param {number} targetX         - Target tile X
+ * @param {number} targetY         - Target tile Y
+ * @returns {Object} { ok, error?, cardId, effects, manaCost, cooldown, ... }
+ */
+function useCardAbility(socketId, cardInstanceId, targetX, targetY) {
+  var combatId = socketToCombat.get(socketId);
+  if (!combatId) return { ok: false, error: 'Not in combat' };
+
+  var combat = activeCombats.get(combatId);
+  if (!combat) return { ok: false, error: 'Combat not found' };
+
+  var unitId = 'player_' + socketId;
+  var unit = combat.units.get(unitId);
+  if (!unit || !unit.alive) return { ok: false, error: 'Unit not active' };
+
+  // Resolve the cardId from the instanceId (equipped cards carry instanceId, executeAbility matches by cardId)
+  var cardId = null;
+  var equippedCards = unit.equippedCards || [];
+  for (var ci = 0; ci < equippedCards.length; ci++) {
+    var c = equippedCards[ci];
+    if (c && c.instanceId === cardInstanceId) {
+      cardId = c.cardId || c.id;
+      break;
+    }
+  }
+  if (!cardId) return { ok: false, error: 'Card not equipped' };
+
+  // Delegate to executeAbility (which handles all validation: AP, mana, cooldown, range)
+  var result = executeAbility(combat, unitId, cardId, targetX, targetY);
+
+  if (!result.success) {
+    return { ok: false, error: result.reason || 'Ability failed' };
+  }
+
+  return {
+    ok:            true,
+    combatId:      combat.id,
+    cardId:        cardId,
+    cardName:      result.abilityName || cardId,
+    unitId:        unitId,
+    targetX:       targetX,
+    targetY:       targetY,
+    effects:       result.effects || [],
+    cooldown:      result.cooldown || 0,
+    remainingAp:   unit.ap,
+    remainingMana: unit.combat ? unit.combat.mana : 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -9677,6 +10556,9 @@ module.exports = {
   OFFLINE_STAT_SCALE: OFFLINE_STAT_SCALE,
   OFFLINE_XP_BONUS: OFFLINE_XP_BONUS,
   OFFLINE_GOLD_BONUS: OFFLINE_GOLD_BONUS,
+
+  // Card ability convenience wrapper
+  useCardAbility: useCardAbility,
 
   // Lich Raid Boss Combat
   initRaidBossCombat: initRaidBossCombat,

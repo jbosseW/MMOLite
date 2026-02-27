@@ -39,6 +39,13 @@
 'use strict';
 
 var worldgen = require('../worldgen');
+var overworldRifts = null; // lazy-loaded to avoid circular require
+function _getOverworldRifts() {
+  if (!overworldRifts) {
+    try { overworldRifts = require('../overworld-rifts'); } catch (e) { /* not loaded yet */ }
+  }
+  return overworldRifts;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -135,6 +142,27 @@ function _dailySpread() {
     }
   }
 
+  // 1b. Seed corruption from active mini-rifts
+  var riftMod = _getOverworldRifts();
+  if (riftMod) {
+    var allRifts = riftMod.getAllRifts();
+    for (var ri = 0; ri < allRifts.length; ri++) {
+      var rift = allRifts[ri];
+      if (rift.destroyed || rift.cleared) continue;
+      var riftLevel = 70 + (rift.tier || 1) * 6; // 76-100
+      var riftKey = rift.chunkX + ',' + rift.chunkY;
+      if (!corruptedChunks[riftKey]) {
+        corruptedChunks[riftKey] = {
+          level: riftLevel,
+          sourceId: 'minirift_' + rift.riftId,
+          lastSpread: today,
+        };
+      } else {
+        corruptedChunks[riftKey].level = Math.max(corruptedChunks[riftKey].level, riftLevel);
+      }
+    }
+  }
+
   // 2. Spread from existing corrupted chunks
   var newChunks = {};
   var keys = Object.keys(corruptedChunks);
@@ -205,6 +233,18 @@ function _dailySpread() {
       var dparts = dkey.split(',');
       var ddist = Math.abs(parseInt(dparts[0], 10) - s.cx) + Math.abs(parseInt(dparts[1], 10) - s.cy);
       if (ddist <= 2) { nearSource = true; break; }
+    }
+    // Also check proximity to active mini-rifts
+    if (!nearSource && riftMod) {
+      var dRifts = riftMod.getAllRifts();
+      var dparts2 = dkey.split(',');
+      var dpx = parseInt(dparts2[0], 10);
+      var dpy = parseInt(dparts2[1], 10);
+      for (var dri = 0; dri < dRifts.length; dri++) {
+        if (dRifts[dri].destroyed || dRifts[dri].cleared) continue;
+        var drd = Math.abs(dpx - dRifts[dri].chunkX) + Math.abs(dpy - dRifts[dri].chunkY);
+        if (drd <= (dRifts[dri].corruptionRadius || 3)) { nearSource = true; break; }
+      }
     }
     if (!nearSource) {
       dchunk.level = Math.max(0, dchunk.level - NATURAL_DECAY_RATE);
@@ -344,7 +384,7 @@ function _checkHordes(io, state) {
     // Town attack at very high corruption
     if (chunk.level >= TOWN_ATTACK_THRESHOLD && nearestTown) {
       if (io) {
-        io.to(nearestTown.id).emit('town_under_attack', {
+        io.to('zone:' + nearestTown.id).emit('town_under_attack', {
           attackerType: 'undead_horde',
           strength: strength,
           hordeId: horde.id,
@@ -354,6 +394,21 @@ function _checkHordes(io, state) {
     }
 
     console.log('[lich] Horde spawned: strength=' + strength + ', target=' + horde.targetTownName);
+
+    // Check for plot raids near high-corruption chunks
+    if (chunk.level >= 50) {
+      try {
+        var baseRaids = require('./director-raids');
+        // Look for player plots near this chunk
+        if (state && state.zones) {
+          state.zones.forEach(function(zone, zoneId) {
+            if (zone && zone.type === 'plot' && zone.ownerKey && Math.random() < 0.10) {
+              baseRaids.triggerCorruptionRaid(io, state, null, null, zoneId);
+            }
+          });
+        }
+      } catch (e) { /* director-raids not available */ }
+    }
   }
 }
 
@@ -568,6 +623,32 @@ function playerCleanse(cx, cy, playerId, bonuses) {
 }
 
 // ---------------------------------------------------------------------------
+// Cleanse rift corruption (called when mini-rift boss is killed)
+// Full cleanse within radius — deletes corrupted chunks entirely.
+// ---------------------------------------------------------------------------
+
+function cleanseRiftCorruption(cx, cy, radius) {
+  if (!cx && cx !== 0) return 0;
+  var cleansed = 0;
+  var keys = Object.keys(corruptedChunks);
+  for (var ki = 0; ki < keys.length; ki++) {
+    var key = keys[ki];
+    var parts = key.split(',');
+    var kcx = parseInt(parts[0], 10);
+    var kcy = parseInt(parts[1], 10);
+    var dist = Math.abs(kcx - cx) + Math.abs(kcy - cy);
+    if (dist <= radius) {
+      delete corruptedChunks[key];
+      cleansed++;
+    }
+  }
+  if (cleansed > 0) {
+    console.log('[lich] Rift corruption cleansed: ' + cleansed + ' chunks around (' + cx + ',' + cy + ') radius ' + radius);
+  }
+  return cleansed;
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -584,6 +665,7 @@ module.exports = {
   getCorruptionForArea: getCorruptionForArea,
   getTotalCorruptedChunks: getTotalCorruptedChunks,
   cleansCorruption: cleansCorruption,
+  cleanseRiftCorruption: cleanseRiftCorruption,
   playerCleanse: playerCleanse,
 
   // Debuff

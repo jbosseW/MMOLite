@@ -1,0 +1,1843 @@
+{
+  "totals": {
+    "totalUniqueRefs": 309,
+    "existing": 206,
+    "missing": 103
+  },
+  "byGroup": [
+    {
+      "group": "icons/characters",
+      "total": 60,
+      "existing": 0,
+      "missing": 60
+    },
+    {
+      "group": "icons/weapons",
+      "total": 29,
+      "existing": 29,
+      "missing": 0
+    },
+    {
+      "group": "icons/books",
+      "total": 25,
+      "existing": 0,
+      "missing": 25
+    },
+    {
+      "group": "icons/loot",
+      "total": 23,
+      "existing": 17,
+      "missing": 6
+    },
+    {
+      "group": "icons/items",
+      "total": 14,
+      "existing": 5,
+      "missing": 9
+    },
+    {
+      "group": "armor/BasicHelm.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/BasicMailHelm.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/Brigandine.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/Chest_07.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/Chest_14_milita.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/Helm_01_guard.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/Helm_07_footman.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/Helm_14_gold.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/Helm_31_gold.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/KingsArmor.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/KnightChest3.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/KnightHelm3.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/LeatherChest0.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/LeatherHelmet.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/MailChest.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "armor/PlateMailChest.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/Anvil.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/BasicAxe.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/BasicPick.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/Forge.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/Gates.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/MetalChest.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/PlatformWithWood.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/Stakes.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "buildingmaterialicons/StoneWall.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "items/Alchemy_13_heal_potion.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "items/Alchemy_17_blue_potion.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "items/Alchemy_24_energy_potion.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "items/Alchemy_25_stamina_potion.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "items/Alchemy_26_immortal_potion.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "items/Alchemy_35_invisibility_flask.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "loot/Loot_153_map.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "loot/Loot_34_necklace.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "loot/Loot_52_metal.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "loot/Loot_53_sphere.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "loot/Loot_54_key.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "quest/Quest_112_lock.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "quest/Quest_17_scroll.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/BowlMeat.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Bread.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/CopperBar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/FishRed.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/FishRedFried.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/GoldCoin.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Logs.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Mineral.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/MineralGold.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Mushrooms.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/NecklaceCross.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/NecklaceGold.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Pearl.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_01_silverbar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_02_cooperbar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_03_goldenbar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_05_magicbar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_06_magicbar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_07_ironbar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_08_stones.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_104_colb.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_105_colbEmpty.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_109_brokenCrystal.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_167_MageCrystal.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_25_crystal.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_52_leaves.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_59_seaweed.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_75_crystalS.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Res_76_crystalRed.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/RingBronze.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/RingGold.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/RingGold2.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/RingSilver.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/RingViking.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Shell.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/SilverBar.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Spikelets.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Stones.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "resourcesandfood/Vegetables.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "skills/Skill_Attack.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "skills/Skill_Defence.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "skills/Skill_Explosion.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "skills/Skill_Heal.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "skills/Skill_Logging.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "skills/Skill_Mining.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "skills/Skill_SwordAttack.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Axe_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Axe_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Axe_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Axe_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Axe_20.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Axe_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Axe_40.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_20.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_25.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Bow_35.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Crossbow_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Crossbow_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Crossbow_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_02.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_40.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Dagger_45.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_02.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_20.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Hammer_45.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Scythe_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Scythe_03.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Scythe_07.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_20.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_25.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/shield_40.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_02.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_20.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Spear_35.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_02.PNG",
+      "total": 1,
+      "existing": 0,
+      "missing": 1
+    },
+    {
+      "group": "weapons/Staff_05.PNG",
+      "total": 1,
+      "existing": 0,
+      "missing": 1
+    },
+    {
+      "group": "weapons/Staff_08.PNG",
+      "total": 1,
+      "existing": 0,
+      "missing": 1
+    },
+    {
+      "group": "weapons/staff_1.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_20.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_25.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_35.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_40.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Staff_45.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_0.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_01.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_05.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_10.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_15.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_25.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_30.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Sword_40.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    },
+    {
+      "group": "weapons/Wand.PNG",
+      "total": 1,
+      "existing": 1,
+      "missing": 0
+    }
+  ],
+  "missingByFolder": [
+    {
+      "folder": "icons/characters",
+      "count": 60
+    },
+    {
+      "folder": "icons/books",
+      "count": 25
+    },
+    {
+      "folder": "icons/items",
+      "count": 9
+    },
+    {
+      "folder": "icons/loot",
+      "count": 6
+    },
+    {
+      "folder": "weapons/Staff_02.PNG",
+      "count": 1
+    },
+    {
+      "folder": "weapons/Staff_05.PNG",
+      "count": 1
+    },
+    {
+      "folder": "weapons/Staff_08.PNG",
+      "count": 1
+    }
+  ],
+  "missingList": [
+    {
+      "ref": "/icons/books/Book_1.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 227
+      }
+    },
+    {
+      "ref": "/icons/books/Book_10.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 237
+      }
+    },
+    {
+      "ref": "/icons/books/Book_11.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 239
+      }
+    },
+    {
+      "ref": "/icons/books/Book_12.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 240
+      }
+    },
+    {
+      "ref": "/icons/books/Book_13.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 241
+      }
+    },
+    {
+      "ref": "/icons/books/Book_14.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 242
+      }
+    },
+    {
+      "ref": "/icons/books/Book_15.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 243
+      }
+    },
+    {
+      "ref": "/icons/books/Book_16.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 245
+      }
+    },
+    {
+      "ref": "/icons/books/Book_17.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 246
+      }
+    },
+    {
+      "ref": "/icons/books/Book_18.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 247
+      }
+    },
+    {
+      "ref": "/icons/books/Book_19.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 248
+      }
+    },
+    {
+      "ref": "/icons/books/Book_2.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 228
+      }
+    },
+    {
+      "ref": "/icons/books/Book_20.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 250
+      }
+    },
+    {
+      "ref": "/icons/books/Book_21.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 251
+      }
+    },
+    {
+      "ref": "/icons/books/Book_22.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 253
+      }
+    },
+    {
+      "ref": "/icons/books/Book_23.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 254
+      }
+    },
+    {
+      "ref": "/icons/books/Book_24.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 256
+      }
+    },
+    {
+      "ref": "/icons/books/Book_25.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 257
+      }
+    },
+    {
+      "ref": "/icons/books/Book_3.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 229
+      }
+    },
+    {
+      "ref": "/icons/books/Book_4.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 230
+      }
+    },
+    {
+      "ref": "/icons/books/Book_5.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 231
+      }
+    },
+    {
+      "ref": "/icons/books/Book_6.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 233
+      }
+    },
+    {
+      "ref": "/icons/books/Book_7.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 234
+      }
+    },
+    {
+      "ref": "/icons/books/Book_8.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 235
+      }
+    },
+    {
+      "ref": "/icons/books/Book_9.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 236
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_f1.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 712
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_f2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 713
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_f3.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 714
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_f5.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 716
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_f6.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 717
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_hunter.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 715
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_m1.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 706
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_m2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 707
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_m3.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 708
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_m4.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 709
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_m5.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 710
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_mage.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 711
+      }
+    },
+    {
+      "ref": "/icons/characters/elf_warrior.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 705
+      }
+    },
+    {
+      "ref": "/icons/characters/gnome_dark.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 722
+      }
+    },
+    {
+      "ref": "/icons/characters/gnome_f1.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 719
+      }
+    },
+    {
+      "ref": "/icons/characters/gnome_f2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 720
+      }
+    },
+    {
+      "ref": "/icons/characters/gnome_f3.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 721
+      }
+    },
+    {
+      "ref": "/icons/characters/gnome_m1.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 723
+      }
+    },
+    {
+      "ref": "/icons/characters/gnome_m2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 724
+      }
+    },
+    {
+      "ref": "/icons/characters/gnome_m3.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 725
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_alchemist.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 675
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_archer.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 672
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_barbarian.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 673
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_bold.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 667
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_captain.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 680
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_chief.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 687
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_conquistador.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 685
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_darklord.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 679
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_jarl.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 669
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_knight.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 663
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_knight2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 664
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_knight3.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 665
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_lord.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 678
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_pharaoh.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 684
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_priest.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 677
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_rogue.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 676
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_ronin.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 671
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_sage.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 683
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_samurai.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 670
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_scout.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 681
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_shinobi.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 682
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_templar.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 674
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_thug.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 686
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_viking.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 668
+      }
+    },
+    {
+      "ref": "/icons/characters/hm_warrior.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 666
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_amazon.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 691
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_archer.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 693
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_girl.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 703
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_knight.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 692
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_maiden.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 701
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_noble1.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 699
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_noble2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 700
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_princess.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 689
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_queen.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 690
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_queen2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 702
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_shaman.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 697
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_viking.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 698
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_warrior.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 694
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_witch1.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 695
+      }
+    },
+    {
+      "ref": "/icons/characters/hw_witch2.png",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 696
+      }
+    },
+    {
+      "ref": "/icons/items/Enchantment_22_scroll.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 408
+      }
+    },
+    {
+      "ref": "/icons/items/Enchantment_32_deathscroll.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 394
+      }
+    },
+    {
+      "ref": "/icons/items/Enchantment_33_runescroll.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 409
+      }
+    },
+    {
+      "ref": "/icons/items/Enchantment_34_summoning_scroll.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 412
+      }
+    },
+    {
+      "ref": "/icons/items/Enchantment_37_demon_scroll.PNG",
+      "count": 2,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 395
+      }
+    },
+    {
+      "ref": "/icons/items/Enchantment_38_shadow_scroll.PNG",
+      "count": 2,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 393
+      }
+    },
+    {
+      "ref": "/icons/items/Enchantment_39_mana_scroll.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 396
+      }
+    },
+    {
+      "ref": "/icons/items/Scroll_enchant.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 391
+      }
+    },
+    {
+      "ref": "/icons/items/Scroll_fire.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 392
+      }
+    },
+    {
+      "ref": "/icons/loot/Blacksmith_51_wooden_chest.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 334
+      }
+    },
+    {
+      "ref": "/icons/loot/Blacksmith_52_wooden_chest.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 336
+      }
+    },
+    {
+      "ref": "/icons/loot/Blacksmith_53_red_chest.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 337
+      }
+    },
+    {
+      "ref": "/icons/loot/Blacksmith_54_iron_chest.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 339
+      }
+    },
+    {
+      "ref": "/icons/loot/Blacksmith_56_royal_casket.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 341
+      }
+    },
+    {
+      "ref": "/icons/loot/Blacksmith_60_magic_chest.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "loot.js",
+        "line": 343
+      }
+    },
+    {
+      "ref": "weapons/Staff_02.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "accounts.js",
+        "line": 2378
+      }
+    },
+    {
+      "ref": "weapons/Staff_05.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "accounts.js",
+        "line": 2369
+      }
+    },
+    {
+      "ref": "weapons/Staff_08.PNG",
+      "count": 1,
+      "sampleUse": {
+        "file": "accounts.js",
+        "line": 2379
+      }
+    }
+  ]
+}

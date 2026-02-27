@@ -3,6 +3,7 @@
 // Events: race_select, stat_allocate, get_rpg_stats
 
 var rpgData = require('../rpg-data');
+var knowledgeHandler = require('./knowledge');
 
 module.exports = {
   init(io, socket, deps) {
@@ -31,6 +32,14 @@ module.exports = {
         racialFeat: rpgData.RACES[result.race].racialFeat,
         computedStats: rpgData.computeStats(result.rpgStats, acc ? acc.level : 1, result.race),
       });
+
+      // Fire glossary trigger for race selection
+      try {
+        var terms = knowledgeHandler.fireGlossaryTrigger(accounts, key, 'race_select');
+        for (var i = 0; i < terms.length; i++) {
+          socket.emit('knowledge_term_unlocked', terms[i]);
+        }
+      } catch (e) { /* glossary trigger non-fatal */ }
     });
 
     // --- stat_allocate: spend a free stat point ---
@@ -83,6 +92,7 @@ module.exports = {
         durability: durabilityInfo,
         awakenings: acc.awakenings || [],
         primaryResource: acc.race ? rpgData.RACE_PRIMARY_RESOURCE[acc.race] : null,
+        ascensionMark: !!acc.ascensionMark,
       });
     });
 
@@ -123,8 +133,8 @@ module.exports = {
         return;
       }
 
-      // Water mounts (raft, boat) require the item in inventory (not consumed)
-      if (mountType && rpgData.WATER_MOUNTS.has(mountType) && mountType !== 'ship' && mountType !== 'airship' && mountType !== 'flying_mount' && mountType !== 'sea_mount') {
+      // All mounts require the item in inventory (not consumed)
+      if (mountType) {
         var inv = accounts.getMMOInventory(key);
         if (!inv || !inv.items) {
           socket.emit('mount_error', { message: 'Inventory not found' });

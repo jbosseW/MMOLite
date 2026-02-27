@@ -263,6 +263,65 @@ module.exports = {
       }
     });
 
+    // dungeon_combat_use_card — direct card ability usage by instanceId
+    // Convenience event: resolves instanceId -> cardId and delegates to executeAbility
+    // via the useCardAbility wrapper. Broadcasts tile changes to combat participants.
+    socket.on('dungeon_combat_use_card', function(data) {
+      try {
+        if (!data || typeof data.cardInstanceId !== 'string') {
+          socket.emit('dungeon_combat_use_card_result', { ok: false, error: 'Missing cardInstanceId' });
+          return;
+        }
+        var targetX = (typeof data.targetX === 'number') ? Math.floor(data.targetX) : -1;
+        var targetY = (typeof data.targetY === 'number') ? Math.floor(data.targetY) : -1;
+        if (targetX < 0 || targetY < 0) {
+          socket.emit('dungeon_combat_use_card_result', { ok: false, error: 'Invalid target coordinates' });
+          return;
+        }
+
+        var result = dungeonCombat.useCardAbility(socket.id, data.cardInstanceId, targetX, targetY);
+
+        if (!result.ok) {
+          socket.emit('dungeon_combat_use_card_result', { ok: false, error: result.error });
+          return;
+        }
+
+        // Broadcast ability used to all players in the same combat
+        var liveCombat = dungeonCombat.getCombatBySocketId(socket.id);
+        if (liveCombat && liveCombat.units) {
+          liveCombat.units.forEach(function(unit) {
+            if (unit.type === 'player' && unit.socketId) {
+              var targetSocket = io.sockets.sockets.get(unit.socketId);
+              if (targetSocket) {
+                targetSocket.emit('combat_ability_used', {
+                  unitId:    result.unitId,
+                  cardId:    result.cardId,
+                  cardName:  result.cardName,
+                  targetX:   result.targetX,
+                  targetY:   result.targetY,
+                  effects:   result.effects,
+                  cooldown:  result.cooldown,
+                });
+              }
+            }
+          });
+        }
+
+        // Confirm to the acting player
+        socket.emit('dungeon_combat_use_card_result', {
+          ok:            true,
+          cardId:        result.cardId,
+          cooldown:      result.cooldown,
+          remainingAp:   result.remainingAp,
+          remainingMana: result.remainingMana,
+          effects:       result.effects,
+        });
+      } catch (err) {
+        console.error('[dungeon_combat_use_card] Error:', err.message);
+        socket.emit('dungeon_combat_use_card_result', { ok: false, error: 'Internal server error' });
+      }
+    });
+
     // Handle player disconnect during combat
     socket.on('disconnect', function() {
       var combat = dungeonCombat.getCombatBySocketId(socket.id);

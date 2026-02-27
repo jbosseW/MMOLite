@@ -1,7 +1,6 @@
 // server.js — Main entry point for MMOLite
 // Pokemon-style MMO game server. Love2D client connects via Socket.IO.
 
-const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
@@ -34,25 +33,20 @@ const express = require('express');
 const http = require('http');
 const { createServer } = http;
 const { Server } = require('socket.io');
-const { setupSocket, socketAccountMap, createDepsFactory, _stockMarket, _auctionHouse, sessionTokens, setDirector } = require('./socket');
+const { setupSocket, socketAccountMap, sessionTokens, setDirector } = require('./socket');
 const director = require('./director');
-const nsGames = require('./handlers/namespace-games');
-const nsMarket = require('./handlers/namespace-market');
 const accounts = require('./accounts');
 const state = require('./state');
-const { Worker } = require('worker_threads');
-const { LobbyManager } = require('./cardgames');
-const { CoinFlipManager } = require('./coinflip');
-let HorseRacingManager, ChessManager;
-try { HorseRacingManager = require('./horseracing').HorseRacingManager; } catch(e) { console.warn('[server] horseracing module not found, horse racing disabled'); }
-try { ChessManager = require('./chess').ChessManager; } catch(e) { console.warn('[server] chess module not found, chess disabled'); }
-let PoolManager;
-try { PoolManager = require('./pool').PoolManager; } catch(e) { console.warn('[server] pool module not found, pool disabled'); }
 const loot = require('./loot');
 const ratelimit = require('./ratelimit');
 const pow = require('./pow');
 const shardBridge = require('./shard-bridge');
 const overworldStructures = require('./overworld-structures');
+const farmingHandler = require('./handlers/farming');
+const rpgData = require('./rpg-data');
+const rumorSystem = require('./rumor-system');
+const companionsHandler = require('./handlers/companions');
+const petsHandler = require('./handlers/pets');
 
 const redis = require('./redis');
 const db = require('./db');
@@ -117,8 +111,8 @@ const io = new Server(server, {
   path: '/socket.io/',
   transports: socketTransports,
   maxHttpBufferSize: 500000,
-  pingInterval: 10000,
-  pingTimeout: 5000,
+  pingInterval: 25000,
+  pingTimeout: 10000,
   perMessageDeflate: {
     zlibDeflateOptions: { level: 1 },
     threshold: 1024,
@@ -165,21 +159,7 @@ if (process.env.OFFLINE_MODE !== '1') {
   }).catch(function() {});
 }
 
-// ---------------------------------------------------------------------------
-// Game Worker thread — BossOrbs + BossBrawl physics run off the main thread
-// ---------------------------------------------------------------------------
-
-let gameWorker = new Worker(path.join(__dirname, 'game-worker.js'));
-
-const gameProxy = createGameProxy(gameWorker);
-const lieroProxy = createLieroProxy(gameWorker);
-
-const lobbyManager = new LobbyManager();
-const coinFlipManager = new CoinFlipManager();
-const horseRacingManager = HorseRacingManager ? new HorseRacingManager() : null;
-const chessManager = ChessManager ? new ChessManager() : null;
-const poolManager = PoolManager ? new PoolManager() : null;
-setupSocket(io, gameProxy, lobbyManager, {}, coinFlipManager, lieroProxy, horseRacingManager);
+setupSocket(io);
 
 // Initialize AI Event Director
 setDirector(director);
@@ -205,353 +185,85 @@ setTimeout(function() {
   }
 }, 30000);
 
-// Set up /games and /market namespaces
-const depsFactory = createDepsFactory(io, gameProxy, lobbyManager, coinFlipManager, lieroProxy, horseRacingManager, chessManager, poolManager);
-const gamesNs = nsGames.setup(io, depsFactory, sessionTokens);
-const marketNs = nsMarket.setup(io, depsFactory, sessionTokens);
-
-// ---------------------------------------------------------------------------
-// Game Proxy — stands in for GameManager on the main thread
-// ---------------------------------------------------------------------------
-function createGameProxy(worker) {
-  const _callbacks = new Map();
-  let _nextId = 0;
-  const _playerInstances = new Map();
-
-  function _send(msg, callback) {
-    if (callback) {
-      msg.reqId = _nextId++;
-      _callbacks.set(msg.reqId, callback);
-    }
-    try {
-      (proxy._worker || worker).postMessage(msg);
-    } catch (err) {
-      console.error('[game-proxy] postMessage failed:', err.message);
-      if (msg.reqId !== undefined) _callbacks.delete(msg.reqId);
-    }
-  }
-
-  var proxy = {
-    _callbacks: _callbacks,
-    _playerInstances: _playerInstances,
-    _worker: null,
-    findBestInstance: function() { return 'main'; },
-    getPlayerInstance: function(socketId) { return _playerInstances.get(socketId) || null; },
-    getInstanceList: function(callback) { _send({ type: 'orbs_get_instances' }, callback); },
-    updateInput: function(socketId, x, y, boost) {
-      try { (proxy._worker || worker).postMessage({ type: 'orbs_move', socketId: socketId, x: x, y: y, boost: boost }); } catch (_) {}
-    },
-    joinBestInstance: function(socketId, name, color, instanceId, callback) {
-      _send({ type: 'orbs_join', socketId: socketId, name: name, color: color, instanceId: instanceId || null }, callback);
-    },
-    removePlayer: function(socketId) {
-      _playerInstances.delete(socketId);
-      try { (proxy._worker || worker).postMessage({ type: 'orbs_leave', socketId: socketId }); } catch (_) {}
-    },
-    disconnectCleanup: function(socketId) {
-      _playerInstances.delete(socketId);
-      try { (proxy._worker || worker).postMessage({ type: 'disconnect', socketId: socketId }); } catch (_) {}
-    },
-    handleMessage: function(msg) {
-      if (msg.reqId !== undefined && _callbacks.has(msg.reqId)) {
-        _callbacks.get(msg.reqId)(msg);
-        _callbacks.delete(msg.reqId);
-      }
-      if (msg.type === 'orbs_joined' && msg.instanceId) _playerInstances.set(msg.socketId, msg.instanceId);
-      if (msg.type === 'orbs_left') _playerInstances.delete(msg.socketId);
-    },
-  };
-  return proxy;
-}
-
-// ---------------------------------------------------------------------------
-// Liero Proxy — stands in for LieroManager on the main thread
-// ---------------------------------------------------------------------------
-function createLieroProxy(worker) {
-  const _callbacks = new Map();
-  let _nextId = 0;
-  const _playerLobbies = new Map();
-
-  function _send(msg, callback) {
-    if (callback) {
-      msg.reqId = _nextId++;
-      _callbacks.set(msg.reqId, callback);
-    }
-    (proxy._worker || worker).postMessage(msg);
-  }
-
-  var proxy = {
-    _callbacks: _callbacks,
-    _playerLobbies: _playerLobbies,
-    _worker: null,
-    getPlayerLobbyId: function(socketId) { return _playerLobbies.get(socketId) || null; },
-    getLobbies: function(callback) { _send({ type: 'liero_get_lobbies' }, callback); },
-    getLobbyState: function(lobbyId, callback) { _send({ type: 'liero_get_lobby_state', lobbyId: lobbyId }, callback); },
-    createLobby: function(socketId, name, color, settings, weapons, spell, callback) {
-      _send({ type: 'liero_create', socketId: socketId, name: name, color: color, settings: settings, weapons: weapons, spell: spell }, callback);
-    },
-    joinLobby: function(socketId, lobbyId, name, color, weapons, spell, callback) {
-      _send({ type: 'liero_join', socketId: socketId, lobbyId: lobbyId, name: name, color: color, weapons: weapons, spell: spell }, callback);
-    },
-    leaveLobby: function(socketId, callback) {
-      _playerLobbies.delete(socketId);
-      _send({ type: 'liero_leave', socketId: socketId }, callback);
-    },
-    startGame: function(lobbyId, socketId, callback) {
-      _send({ type: 'liero_start', lobbyId: lobbyId, socketId: socketId }, callback);
-    },
-    handleInput: function(socketId, input) {
-      (proxy._worker || worker).postMessage({ type: 'liero_input', socketId: socketId, input: input });
-    },
-    addBot: function(lobbyId, requesterId, callback) {
-      _send({ type: 'liero_add_bot', lobbyId: lobbyId, requesterId: requesterId }, callback);
-    },
-    removeBot: function(lobbyId, botId, requesterId, callback) {
-      _send({ type: 'liero_remove_bot', lobbyId: lobbyId, botId: botId, requesterId: requesterId }, callback);
-    },
-    disconnectCleanup: function(socketId) {
-      _playerLobbies.delete(socketId);
-      (proxy._worker || worker).postMessage({ type: 'disconnect', socketId: socketId });
-    },
-    handleMessage: function(msg) {
-      if (msg.reqId !== undefined && _callbacks.has(msg.reqId)) {
-        _callbacks.get(msg.reqId)(msg);
-        _callbacks.delete(msg.reqId);
-      }
-      if (msg.type === 'liero_created' && msg.lobbyId) _playerLobbies.set(msg.socketId, msg.lobbyId);
-      if (msg.type === 'liero_joined' && msg.success && msg.lobbyId) _playerLobbies.set(msg.socketId, msg.lobbyId);
-      if (msg.type === 'liero_left') _playerLobbies.delete(msg.socketId);
-    },
-  };
-  return proxy;
-}
-
-// ---------------------------------------------------------------------------
-// Worker message handler — broadcasts game state via Socket.IO
-// ---------------------------------------------------------------------------
-function _handleWorkerMessage(msg) {
-  switch (msg.type) {
-    case 'orbs_tick': {
-      var ticks = msg.ticks;
-      for (var ti = 0; ti < ticks.length; ti++) {
-        var t = ticks[ti];
-        var roomName = 'game_' + t.instanceId;
-        if (t.playerCount > 20) {
-          for (var nsi = 0; nsi < 2; nsi++) {
-            var ns = nsi === 0 ? io.sockets : gamesNs;
-            var room = ns.adapter.rooms.get(roomName);
-            if (!room) continue;
-            for (var sid of room) {
-              var s = ns.sockets ? ns.sockets.get(sid) : null;
-              if (!s) continue;
-              var myPlayer = null;
-              for (var pi = 0; pi < t.allPlayers.length; pi++) {
-                if (t.allPlayers[pi].id === sid) { myPlayer = t.allPlayers[pi]; break; }
-              }
-              if (!myPlayer) {
-                s.emit('game_players', { players: t.allPlayers, leaderboard: t.leaderboard });
-                continue;
-              }
-              var halfW = 1600 * 0.6, halfH = 1200 * 0.6;
-              var visible = [];
-              for (var vi = 0; vi < t.allPlayers.length; vi++) {
-                var other = t.allPlayers[vi];
-                if (Math.abs(other.x - myPlayer.x) < halfW && Math.abs(other.y - myPlayer.y) < halfH) visible.push(other);
-              }
-              s.emit('game_players', { players: visible, leaderboard: t.leaderboard });
-            }
-          }
-        } else {
-          var playersState = { players: t.allPlayers, leaderboard: t.leaderboard };
-          io.to(roomName).emit('game_players', playersState);
-          gamesNs.to(roomName).emit('game_players', playersState);
-        }
-        if (t.eatenOrbs.length > 0) {
-          var eatenBatch = { orbs: t.eatenOrbs };
-          io.to(roomName).emit('game_orbs_eaten', eatenBatch);
-          gamesNs.to(roomName).emit('game_orbs_eaten', eatenBatch);
-        }
-        if (t.spawnedOrbs.length > 0) {
-          var spawnedBatch = { orbs: t.spawnedOrbs };
-          io.to(roomName).emit('game_orbs_spawned', spawnedBatch);
-          gamesNs.to(roomName).emit('game_orbs_spawned', spawnedBatch);
-        }
-        for (var ei = 0; ei < t.eatenPlayers.length; ei++) {
-          var ep = t.eatenPlayers[ei];
-          io.to(roomName).emit('game_player_eaten', ep);
-          gamesNs.to(roomName).emit('game_player_eaten', ep);
-          var killerAccKey = socketAccountMap.get(ep.by);
-          if (killerAccKey) {
-            var chipReward = 50;
-            var newChips = accounts.updateChips(killerAccKey, chipReward);
-            var killerSocket = io.sockets.sockets.get(ep.by) || gamesNs.sockets.get(ep.by);
-            if (killerSocket && newChips !== null) {
-              killerSocket.emit('chips_updated', { chips: newChips, reason: 'Ate ' + ep.eatenName + '! +' + chipReward });
-            }
-          }
-        }
-      }
-      break;
-    }
-
-    case 'liero_tick': {
-      var broadcasts = msg.broadcasts;
-      for (var bi = 0; bi < broadcasts.length; bi++) {
-        var b = broadcasts[bi];
-        var lRoomName = 'liero_' + b.lobbyId;
-        io.to(lRoomName).emit('liero_tick', { players: b.players, projectiles: b.projectiles, pickups: b.pickups });
-        gamesNs.to(lRoomName).emit('liero_tick', { players: b.players, projectiles: b.projectiles, pickups: b.pickups });
-        if (b.terrainDeltas && b.terrainDeltas.length > 0) {
-          io.to(lRoomName).emit('liero_terrain_delta', { changes: b.terrainDeltas });
-          gamesNs.to(lRoomName).emit('liero_terrain_delta', { changes: b.terrainDeltas });
-        }
-        if (b.kills) {
-          for (var ki = 0; ki < b.kills.length; ki++) {
-            io.to(lRoomName).emit('liero_player_killed', b.kills[ki]);
-            gamesNs.to(lRoomName).emit('liero_player_killed', b.kills[ki]);
-          }
-        }
-        if (b.respawns) {
-          for (var ri = 0; ri < b.respawns.length; ri++) {
-            io.to(lRoomName).emit('liero_player_respawn', b.respawns[ri]);
-            gamesNs.to(lRoomName).emit('liero_player_respawn', b.respawns[ri]);
-          }
-        }
-        if (b.pickupSpawns) {
-          for (var psi = 0; psi < b.pickupSpawns.length; psi++) {
-            io.to(lRoomName).emit('liero_pickup_spawned', { pickup: b.pickupSpawns[psi] });
-            gamesNs.to(lRoomName).emit('liero_pickup_spawned', { pickup: b.pickupSpawns[psi] });
-          }
-        }
-        if (b.pickupCollections) {
-          for (var pci = 0; pci < b.pickupCollections.length; pci++) {
-            io.to(lRoomName).emit('liero_pickup_collected', b.pickupCollections[pci]);
-            gamesNs.to(lRoomName).emit('liero_pickup_collected', b.pickupCollections[pci]);
-          }
-        }
-        if (b.spellCasts) {
-          for (var sci = 0; sci < b.spellCasts.length; sci++) {
-            io.to(lRoomName).emit('liero_spell_cast', b.spellCasts[sci]);
-            gamesNs.to(lRoomName).emit('liero_spell_cast', b.spellCasts[sci]);
-          }
-        }
-        if (b.gameOver) {
-          io.to(lRoomName).emit('liero_game_over', b.gameOver);
-          gamesNs.to(lRoomName).emit('liero_game_over', b.gameOver);
-          if (b.gameOver.chipRewards) {
-            for (var pid of Object.keys(b.gameOver.chipRewards || {})) {
-              var accKey = socketAccountMap.get(pid);
-              if (accKey) {
-                var reward = b.gameOver.chipRewards[pid];
-                var newC = accounts.updateChips(accKey, reward);
-                var sock = io.sockets.sockets.get(pid) || gamesNs.sockets.get(pid);
-                if (sock && newC !== null) sock.emit('chips_updated', { chips: newC, reason: 'BossBrawl: +' + reward + ' chips' });
-              }
-            }
-          }
-          var lLobbies = msg.lobbies || [];
-          io.to('liero_lobby').emit('liero_lobbies_updated', { lobbies: lLobbies });
-          gamesNs.to('liero_lobby').emit('liero_lobbies_updated', { lobbies: lLobbies });
-        }
-      }
-      break;
-    }
-
-    case 'orbs_disconnect_cleanup': {
-      var dRoomName = 'game_' + msg.instanceId;
-      io.to(dRoomName).emit('game_player_left', { id: msg.socketId });
-      gamesNs.to(dRoomName).emit('game_player_left', { id: msg.socketId });
-      break;
-    }
-
-    case 'liero_disconnect_cleanup': {
-      if (!msg.destroyed && msg.lobbyState) {
-        io.to('liero_' + msg.lobbyId).emit('liero_lobby_update', { lobby: msg.lobbyState });
-        gamesNs.to('liero_' + msg.lobbyId).emit('liero_lobby_update', { lobby: msg.lobbyState });
-      }
-      io.to('liero_lobby').emit('liero_lobbies_updated', { lobbies: msg.lobbies });
-      gamesNs.to('liero_lobby').emit('liero_lobbies_updated', { lobbies: msg.lobbies });
-      break;
-    }
-
-    case 'ready':
-      console.log('[server] Game worker thread is ready');
-      break;
-
-    default:
-      break;
-  }
-}
-
-gameWorker.on('message', function(msg) {
+// Farming tick (every 60s — crop growth, animal production, watering)
+setInterval(function() {
   try {
-    gameProxy.handleMessage(msg);
-    lieroProxy.handleMessage(msg);
-    _handleWorkerMessage(msg);
+    farmingHandler.farmingTick(state, io, accounts);
   } catch (err) {
-    console.error('[server] Worker message handler error:', err.message);
+    console.error('[server] Farming tick error:', err.message);
   }
-});
+}, 60000);
 
-gameWorker.on('error', function(err) {
-  console.error('[server] Game worker error:', err.message);
-});
-
-gameWorker.on('exit', function(code) {
-  console.error('[server] Game worker exited with code', code, '-- respawning...');
-  _respawnGameWorker();
-});
-
-var _workerRespawnCount = 0;
-function _respawnGameWorker() {
-  _workerRespawnCount++;
-  if (_workerRespawnCount > 10) {
-    console.error('[server] Game worker respawn limit exceeded (10). Giving up.');
-    return;
+// Biome weather tick (every 5 minutes -- update per-biome weather)
+setInterval(function() {
+  try {
+    var biomes = ['ocean','deep_ocean','beach','plains','forest','dense_forest','swamp','desert','tundra','frozen','mountains','highlands','volcanic','cave','underground','hollow_earth','coastal'];
+    biomes.forEach(function(biomeId) {
+      var newWeather = rpgData.getWeatherForBiome(biomeId);
+      state.setBiomeWeather(biomeId, newWeather);
+    });
+  } catch (err) {
+    console.error('[server] Biome weather tick error:', err.message);
   }
-  var delay = Math.min(5000, 500 * _workerRespawnCount);
-  setTimeout(function() {
-    try {
-      var newWorker = new Worker(path.join(__dirname, 'game-worker.js'));
-      gameProxy._worker = newWorker;
-      lieroProxy._worker = newWorker;
-      gameProxy._callbacks.clear();
-      lieroProxy._callbacks.clear();
-      gameProxy._playerInstances.clear();
-      lieroProxy._playerLobbies.clear();
-      newWorker.on('message', function(msg) {
-        try {
-          gameProxy.handleMessage(msg);
-          lieroProxy.handleMessage(msg);
-          _handleWorkerMessage(msg);
-        } catch (err) {
-          console.error('[server] Worker message handler error:', err.message);
-        }
-      });
-      newWorker.on('error', function(err) { console.error('[server] Game worker error:', err.message); });
-      newWorker.on('exit', function(c) { console.error('[server] Game worker exited with code', c, '-- respawning...'); _respawnGameWorker(); });
-      gameWorker = newWorker;
-      console.log('[server] Game worker respawned (#' + _workerRespawnCount + ')');
-      setTimeout(function() { if (newWorker === gameWorker) _workerRespawnCount = 0; }, 5 * 60 * 1000);
-    } catch (err) {
-      console.error('[server] Failed to respawn game worker:', err.message);
+}, 5 * 60 * 1000);
+
+// Rumor refresh tick (every 30 minutes)
+rumorSystem.refreshAllTownRumors({});
+setInterval(function() {
+  try {
+    rumorSystem.refreshAllTownRumors({});
+  } catch (err) {
+    console.error('[server] Rumor refresh tick error:', err.message);
+  }
+}, 30 * 60 * 1000);
+
+// Calendar advancement tick (check every 60s, advance when interval elapsed)
+setInterval(function() {
+  try {
+    var advanced = state.advanceCalendar();
+    if (advanced) {
+      var cal = state.getCalendar();
+      io.emit('calendar_update', cal);
+      console.log('[calendar] Advanced to day ' + cal.day + ' of ' + cal.monthName + ', year ' + cal.year + ' (' + cal.season + ')');
     }
-  }, delay);
-}
+  } catch (err) {
+    console.error('[calendar] Tick error:', err.message);
+  }
+}, 60000);
 
-// Redirect stock market ticks to namespaces
-_stockMarket.onTick = function(marketState) {
-  var marketRoom = marketNs.adapter.rooms.get('stock_market');
-  if (marketRoom && marketRoom.size > 0) marketNs.to('stock_market').emit('stock_market_tick', marketState);
-  var defaultRoom = io.sockets.adapter.rooms.get('stock_market');
-  if (defaultRoom && defaultRoom.size > 0) io.to('stock_market').emit('stock_market_tick', marketState);
-};
-_stockMarket.onEvent = function(event) {
-  var marketRoom = marketNs.adapter.rooms.get('stock_market');
-  if (marketRoom && marketRoom.size > 0) marketNs.to('stock_market').emit('stock_market_event', event);
-  var defaultRoom = io.sockets.adapter.rooms.get('stock_market');
-  if (defaultRoom && defaultRoom.size > 0) io.to('stock_market').emit('stock_market_event', event);
-};
+// Companion wage tick (every 24 hours -- deduct wages for online players)
+setInterval(function() {
+  try {
+    var { socketAccountMap } = require('./socket');
+    var keys = new Set(socketAccountMap.values());
+    keys.forEach(function(key) {
+      var acc = accounts.loadAccount(key);
+      if (acc && acc.companions && acc.companions.length > 0) {
+        companionsHandler.deductCompanionWages(acc);
+        accounts.saveAccount(acc);
+      }
+    });
+  } catch (err) {
+    console.error('[server] Companion wage tick error:', err.message);
+  }
+}, 24 * 60 * 60 * 1000);
+
+// Pet decay tick (every hour -- hunger/happiness decay for online players' pets)
+setInterval(function() {
+  try {
+    var { socketAccountMap } = require('./socket');
+    var keys = new Set(socketAccountMap.values());
+    keys.forEach(function(key) {
+      var acc = accounts.loadAccount(key);
+      if (acc && acc.petData && acc.petData.length > 0) {
+        petsHandler.tickPetDecay(acc);
+        accounts.saveAccount(acc);
+      }
+    });
+  } catch (err) {
+    console.error('[server] Pet decay tick error:', err.message);
+  }
+}, 3600000); // 1 hour
 
 // CORS for REST API — use same origin policy as Socket.IO
 app.use('/api', function(req, res, next) {
@@ -758,20 +470,36 @@ setInterval(function() {
     if (zone.members.size > 0) {
       if (zone.chunkCache && zone.members.size > 20) {
         // Large chunk-based zones: send per-player filtered positions (nearby only)
-        var RADIUS_SQ = 2560 * 2560; // ~5 chunks
+        // Build a chunk-bucket map first to avoid O(n²) scanning per player
+        var CHUNK_SIZE = 512;
+        var CHUNK_RADIUS = 5; // 5 chunks = 2560px, matches original RADIUS_SQ
+        var chunkBuckets = new Map(); // 'cx,cy' -> [{ id, pos }]
+        for (var sid of zone.members) {
+          var pos = state.playerPositions.get(sid);
+          if (!pos) continue;
+          var bx = Math.floor(pos.x / CHUNK_SIZE);
+          var by = Math.floor(pos.y / CHUNK_SIZE);
+          var bkey = bx + ',' + by;
+          if (!chunkBuckets.has(bkey)) chunkBuckets.set(bkey, []);
+          chunkBuckets.get(bkey).push({ id: sid, pos: pos });
+        }
         for (var sid of zone.members) {
           var myPos = state.playerPositions.get(sid);
           if (!myPos) continue;
+          var mcx = Math.floor(myPos.x / CHUNK_SIZE);
+          var mcy = Math.floor(myPos.y / CHUNK_SIZE);
           var nearby = [];
-          for (var otherId of zone.members) {
-            var oPos = state.playerPositions.get(otherId);
-            if (!oPos) continue;
-            var dx = oPos.x - myPos.x, dy = oPos.y - myPos.y;
-            if (dx * dx + dy * dy < RADIUS_SQ) {
-              nearby.push({ id: otherId, x: oPos.x, y: oPos.y, f: oPos.facing });
+          for (var ncx = mcx - CHUNK_RADIUS; ncx <= mcx + CHUNK_RADIUS; ncx++) {
+            for (var ncy = mcy - CHUNK_RADIUS; ncy <= mcy + CHUNK_RADIUS; ncy++) {
+              var bucket = chunkBuckets.get(ncx + ',' + ncy);
+              if (!bucket) continue;
+              for (var bi = 0; bi < bucket.length; bi++) {
+                var entry = bucket[bi];
+                nearby.push({ id: entry.id, x: entry.pos.x, y: entry.pos.y, f: entry.pos.facing });
+              }
             }
           }
-          io.to(sid).emit('zone_tick', { players: nearby, time: worldPayload.time, weather: worldPayload.weather });
+          io.to(sid).emit('zone_positions', { players: nearby, time: worldPayload.time, weather: worldPayload.weather });
         }
       } else {
         // Small zones or few players: broadcast all positions
@@ -780,7 +508,7 @@ setInterval(function() {
           var pos = state.playerPositions.get(sid);
           if (pos) positions.push({ id: sid, x: pos.x, y: pos.y, f: pos.facing });
         }
-        io.to('zone:' + zoneId).emit('zone_tick', {
+        io.to('zone:' + zoneId).emit('zone_positions', {
           players: positions,
           time: worldPayload.time,
           weather: worldPayload.weather,
@@ -808,9 +536,18 @@ try {
 }
 
 // World time cycle — advance day/night every minute
+// Only broadcast when time phase or weather actually changes (HIGH-1 perf fix)
+var _lastTimePhase = state.world.timeOfDay;
+var _lastWeather = state.world.weather;
 setInterval(function() {
+  var prevPhase = state.world.timeOfDay;
+  var prevWeather = state.world.weather;
   state.advanceWorldTime();
-  io.emit('world_time', { timeOfDay: state.world.timeOfDay, weather: state.world.weather });
+  if (state.world.timeOfDay !== prevPhase || state.world.weather !== prevWeather) {
+    _lastTimePhase = state.world.timeOfDay;
+    _lastWeather = state.world.weather;
+    io.emit('world_time', { timeOfDay: state.world.timeOfDay, weather: state.world.weather });
+  }
 }, 60000);
 
 // ---------------------------------------------------------------------------
@@ -839,26 +576,13 @@ function scheduleNextWipe() {
 
   setTimeout(() => {
     io.emit('server_wipe', { message: 'Daily wipe complete.' });
-    gamesNs.emit('server_wipe', { message: 'Daily wipe complete.' });
-    marketNs.emit('server_wipe', { message: 'Daily wipe complete.' });
 
     // Wipe ephemeral state (zones keep definitions, clear players/chat)
     state.wipeEphemeral();
 
     io.disconnectSockets(true);
-    gamesNs.disconnectSockets(true);
-    marketNs.disconnectSockets(true);
 
     // Reset game state
-    gameWorker.postMessage({ type: 'reset' });
-    gameProxy._playerInstances.clear();
-    lieroProxy._playerLobbies.clear();
-    lobbyManager.reset();
-    coinFlipManager.reset();
-    if (horseRacingManager && horseRacingManager.reset) horseRacingManager.reset();
-    if (chessManager && chessManager.reset) chessManager.reset();
-    if (poolManager && poolManager.reset) poolManager.reset();
-    if (_stockMarket && _stockMarket.reset) _stockMarket.reset();
     try { var macroDir = director.getMacroDirector(); if (macroDir && macroDir.reset) macroDir.reset(); } catch (_) {}
     accounts.clearAllDMs();
     overworldStructures.reset();
@@ -943,6 +667,11 @@ server.listen(PORT, () => {
 
   // Create default zones on startup
   state.initDefaultZones();
+
+  // Async account preload (non-blocking — replaces synchronous IIFE at module load)
+  accounts.preloadKeyIndex().catch(function(err) {
+    console.error('[server] preloadKeyIndex error:', err.message);
+  });
 
   // Start shard bridge heartbeat (registers with master server) — skip in offline mode
   if (process.env.OFFLINE_MODE !== '1') {

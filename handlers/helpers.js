@@ -54,6 +54,106 @@ function checkEventRateStrict(socket, event, maxPerWindow, windowMs) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Graceful rate limiting — warnings + soft cooldowns, no silent drops
+// ---------------------------------------------------------------------------
+
+// Per-socket active cooldowns: Map<socketId, Map<event, expiresAt>>
+const _socketCooldowns = new Map();
+
+// Prune expired cooldown entries every 2 minutes to prevent memory growth
+setInterval(function() {
+  const now = Date.now();
+  for (const [sid, events] of _socketCooldowns) {
+    for (const [evt, expiresAt] of events) {
+      if (now >= expiresAt) events.delete(evt);
+    }
+    if (events.size === 0) _socketCooldowns.delete(sid);
+  }
+}, 120000);
+
+/**
+ * Remove all cooldown state for a socket (call on disconnect).
+ */
+function clearSocketCooldowns(socketId) {
+  _socketCooldowns.delete(socketId);
+}
+
+/**
+ * Rate-limit with player feedback instead of silent drops.
+ *
+ * - At 75%+ of limit: allows the action and emits `rate_warning` so the
+ *   client can show a visual indicator.
+ * - At/over limit: enters a cooldown equal to the window duration, emits
+ *   `rate_cooldown` with the wait time, and returns false. The player is
+ *   NOT disconnected and the cooldown expires automatically.
+ *
+ * @returns {boolean} true if the action should proceed
+ */
+function applyRateGrace(socket, event, maxPerWindow, windowMs) {
+  if (process.env.OFFLINE_MODE === '1') return true;
+
+  // Check active cooldown first (set by a previous over-limit hit)
+  const cooldowns = _socketCooldowns.get(socket.id);
+  if (cooldowns) {
+    const cooldownUntil = cooldowns.get(event);
+    if (cooldownUntil && Date.now() < cooldownUntil) {
+      const remainingMs = cooldownUntil - Date.now();
+      socket.emit('rate_cooldown', {
+        event: event,
+        cooldownMs: remainingMs,
+        message: 'Please wait ' + Math.ceil(remainingMs / 1000) + 's.',
+      });
+      return false;
+    }
+  }
+
+  // Peek at socket-level usage (this is the binding check inside checkEventRate)
+  const perSocketMax = Math.max(1, Math.floor(maxPerWindow / 2));
+  const socketEventKey = 'sock:' + event;
+  const currentCount = ratelimit.peekCount(socket.id, socketEventKey, windowMs);
+
+  if (currentCount >= perSocketMax) {
+    // Over limit — set a cooldown equal to the window and notify the player
+    if (!_socketCooldowns.has(socket.id)) _socketCooldowns.set(socket.id, new Map());
+    _socketCooldowns.get(socket.id).set(event, Date.now() + windowMs);
+    socket.emit('rate_cooldown', {
+      event: event,
+      cooldownMs: windowMs,
+      message: 'Too many ' + event.replace(/_/g, ' ') + ' actions. Wait ' + Math.ceil(windowMs / 1000) + 's.',
+    });
+    return false;
+  }
+
+  // Consume a slot via the standard check
+  const allowed = checkEventRate(socket, event, maxPerWindow, windowMs);
+  if (!allowed) {
+    // IP-level budget exhausted
+    if (!_socketCooldowns.has(socket.id)) _socketCooldowns.set(socket.id, new Map());
+    _socketCooldowns.get(socket.id).set(event, Date.now() + windowMs);
+    socket.emit('rate_cooldown', {
+      event: event,
+      cooldownMs: windowMs,
+      message: 'Too many requests. Wait ' + Math.ceil(windowMs / 1000) + 's.',
+    });
+    return false;
+  }
+
+  // Warn when usage enters the top 25% of the allowed window
+  const warnAt = Math.max(1, Math.floor(perSocketMax * 0.75));
+  if (currentCount + 1 >= warnAt) {
+    const remaining = perSocketMax - currentCount - 1;
+    socket.emit('rate_warning', {
+      event: event,
+      remaining: remaining,
+      message: 'Slow down — ' + remaining + ' ' + event.replace(/_/g, ' ') +
+               (remaining !== 1 ? ' actions' : ' action') + ' left this window.',
+    });
+  }
+
+  return true;
+}
+
 /**
  * Sanitize user-provided text.
  * 1. Strip control chars (except \n), zero-width chars
@@ -225,6 +325,8 @@ function processPokerBots(io, lobbyMgr, lobbyId, socketAccountMap, accounts) {
 module.exports = {
   checkEventRate,
   checkEventRateStrict,
+  applyRateGrace,
+  clearSocketCooldowns,
   sanitizeText,
   saveChipsForSocket,
   saveAllLobbyChips,

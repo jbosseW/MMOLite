@@ -265,6 +265,8 @@ function initEnemyAI(enemy, archetype) {
   enemy.windUpAbility = null;
   enemy.changed = false;         // dirty flag for delta broadcast
   enemy.saturation = null;       // ability saturation tracking (prevents heal spam etc.)
+  enemy.patrolTimer = 0;         // timer-based patrol wandering counter
+  enemy.patrolInterval = 3 + Math.floor(Math.random() * 3); // wander every 3-5 ticks (stagger per enemy)
   // Boss phase
   if (enemy.isBoss) {
     enemy.currentPhase = 0;
@@ -1052,9 +1054,11 @@ function tickEnemy(enemy, floor, players, playerCombatStates, stealthLevels, ene
       break;
 
     case 'patrol':
-      // Wander randomly
-      if (Math.random() < PATROL_WANDER_CHANCE) {
+      // Timer-based wandering: move every N ticks for consistent patrol behavior
+      enemy.patrolTimer++;
+      if (enemy.patrolTimer >= (enemy.patrolInterval || 4)) {
         wanderStep(enemy, grid, width, height, enemies);
+        enemy.patrolTimer = 0;
       }
       // Check for visible players
       if (visible.length > 0) {
@@ -1628,6 +1632,45 @@ function decideTurnAction(enemy, combat, players, floor) {
   var height = floor.height;
   var arch = ARCHETYPES[enemy.archetype] || ARCHETYPES.bruiser;
 
+  // Boss rotation override: if this enemy has a rotation profile, use it
+  if (enemy.isBoss) {
+    var rotAbility = getBossRotationAbility(enemy, combat);
+    if (rotAbility) {
+      // Find nearest alive player for targeting
+      var alivePlayers = [];
+      for (var rpi = 0; rpi < players.length; rpi++) {
+        if (players[rpi].alive) alivePlayers.push(players[rpi]);
+      }
+      if (alivePlayers.length > 0) {
+        // Pick highest-threat target
+        var rTarget = alivePlayers[0];
+        var rBestThreat = -999;
+        for (var rti = 0; rti < alivePlayers.length; rti++) {
+          var rThreat = calculateThreatScore(enemy, alivePlayers[rti], alivePlayers[rti].combat || {});
+          if (rThreat > rBestThreat) { rBestThreat = rThreat; rTarget = alivePlayers[rti]; }
+        }
+
+        if (rotAbility.type === 'heal') {
+          var healAmt = Math.round(enemy.maxHp * (rotAbility.healPercent || 0.10));
+          enemy.hp = Math.min(enemy.maxHp, enemy.hp + healAmt);
+          return { type: 'ability', movePath: [], targetId: enemy.id, abilityId: rotAbility.id, bossAbility: rotAbility };
+        }
+        if (rotAbility.type === 'buff') {
+          if (rotAbility.effect) {
+            if (!enemy._bossBuffs) enemy._bossBuffs = [];
+            enemy._bossBuffs.push({ atkMult: rotAbility.effect.atkMult || 1, duration: rotAbility.effect.duration || 3, appliedAt: combat.turn || 0 });
+          }
+          return { type: 'ability', movePath: [], targetId: enemy.id, abilityId: rotAbility.id, bossAbility: rotAbility };
+        }
+        if (rotAbility.type === 'summon') {
+          return { type: 'ability', movePath: [], targetId: null, abilityId: rotAbility.id, bossAbility: rotAbility };
+        }
+        // Attack / AoE / Charge: target the player
+        return { type: 'ability', movePath: [], targetId: rTarget.id, abilityId: rotAbility.id, bossAbility: rotAbility };
+      }
+    }
+  }
+
   // Get all alive enemies for ally tracking
   var allies = [];
   combat.units.forEach(function(unit) {
@@ -1831,6 +1874,103 @@ function isTurnWalkable(grid, x, y, width, height, combat) {
 }
 
 // ---------------------------------------------------------------------------
+// Boss Rotation Profiles — phase-based ability sequences
+// ---------------------------------------------------------------------------
+
+var BOSS_ROTATIONS = {
+  // Generic boss archetypes with rotation sequences
+  brute: {
+    phases: [
+      { threshold: 1.0, name: 'Assault', rotation: ['devastating_slam', 'basic_attack', 'basic_attack', 'enrage_roar'] },
+      { threshold: 0.5, name: 'Frenzy', rotation: ['berserk_rush', 'devastating_slam', 'basic_attack', 'enrage_roar', 'devastating_slam'] },
+      { threshold: 0.2, name: 'Last Stand', rotation: ['enrage_roar', 'berserk_rush', 'devastating_slam', 'devastating_slam', 'berserk_rush'] },
+    ],
+  },
+  guardian: {
+    phases: [
+      { threshold: 1.0, name: 'Bulwark', rotation: ['shield_bash', 'basic_attack', 'heal_pulse', 'shield_bash'] },
+      { threshold: 0.5, name: 'Retaliation', rotation: ['shield_bash', 'summon_minions', 'basic_attack', 'heal_pulse', 'shield_bash'] },
+      { threshold: 0.2, name: 'Desperation', rotation: ['heal_pulse', 'shield_bash', 'summon_minions', 'heal_pulse', 'shield_bash'] },
+    ],
+  },
+  caster: {
+    phases: [
+      { threshold: 1.0, name: 'Arcane', rotation: ['shadow_nova', 'basic_attack', 'basic_attack', 'shadow_nova'] },
+      { threshold: 0.5, name: 'Unleash', rotation: ['shadow_nova', 'summon_minions', 'shadow_nova', 'basic_attack'] },
+      { threshold: 0.2, name: 'Cataclysm', rotation: ['shadow_nova', 'shadow_nova', 'shadow_nova', 'summon_minions'] },
+    ],
+  },
+  beast: {
+    phases: [
+      { threshold: 1.0, name: 'Prowl', rotation: ['basic_attack', 'basic_attack', 'enrage_roar', 'berserk_rush'] },
+      { threshold: 0.5, name: 'Rage', rotation: ['berserk_rush', 'basic_attack', 'devastating_slam', 'enrage_roar'] },
+      { threshold: 0.2, name: 'Feral', rotation: ['berserk_rush', 'berserk_rush', 'devastating_slam', 'enrage_roar', 'berserk_rush'] },
+    ],
+  },
+};
+
+// Boss-specific ability definitions
+var BOSS_ABILITIES = {
+  enrage_roar: { id: 'enrage_roar', name: 'Enrage Roar', type: 'buff', range: 0, apCost: 1,
+    effect: { atkMult: 1.3, duration: 3 }, description: 'Roar that increases ATK by 30% for 3 turns.' },
+  devastating_slam: { id: 'devastating_slam', name: 'Devastating Slam', type: 'aoe', range: 1, radius: 1, apCost: 2,
+    damageMult: 2.0, description: 'Massive slam dealing 200% damage to all adjacent.' },
+  shield_bash: { id: 'shield_bash', name: 'Shield Bash', type: 'attack', range: 1, apCost: 1,
+    damageMult: 1.2, statusEffect: { name: 'stun', duration: 1, chance: 0.4 }, description: 'Bash for 120% damage with 40% stun.' },
+  berserk_rush: { id: 'berserk_rush', name: 'Berserk Rush', type: 'charge', range: 3, apCost: 2,
+    damageMult: 1.8, description: 'Charge up to 3 tiles and slam for 180% damage.' },
+  shadow_nova: { id: 'shadow_nova', name: 'Shadow Nova', type: 'aoe', range: 0, radius: 2, apCost: 2,
+    damageMult: 1.5, element: 'dark', description: 'Dark explosion dealing 150% damage in radius 2.' },
+  summon_minions: { id: 'summon_minions', name: 'Summon Minions', type: 'summon', range: 0, apCost: 2,
+    summonCount: 2, description: 'Summon 2 minions to aid in combat.' },
+  heal_pulse: { id: 'heal_pulse', name: 'Heal Pulse', type: 'heal', range: 0, apCost: 2,
+    healPercent: 0.10, description: 'Heal self for 10% of max HP.' },
+  basic_attack: { id: 'basic_attack', name: 'Attack', type: 'attack', range: 1, apCost: 1,
+    damageMult: 1.0, description: 'Basic melee attack.' },
+};
+
+// Get boss rotation ability for this turn
+function getBossRotationAbility(enemy, combat) {
+  if (!enemy || !enemy.isBoss) return null;
+
+  // Determine boss archetype for rotation profile
+  var rotProfile = null;
+  if (enemy.rotationProfile && BOSS_ROTATIONS[enemy.rotationProfile]) {
+    rotProfile = BOSS_ROTATIONS[enemy.rotationProfile];
+  } else if (enemy.archetype && BOSS_ROTATIONS[enemy.archetype]) {
+    rotProfile = BOSS_ROTATIONS[enemy.archetype];
+  }
+  if (!rotProfile) return null;
+
+  // Determine current phase based on HP
+  var hpPct = enemy.maxHp > 0 ? enemy.hp / enemy.maxHp : 1;
+  var currentPhase = rotProfile.phases[0];
+  for (var pi = rotProfile.phases.length - 1; pi >= 0; pi--) {
+    if (hpPct <= rotProfile.phases[pi].threshold) {
+      currentPhase = rotProfile.phases[pi];
+    }
+  }
+
+  // Track rotation index per enemy
+  if (!enemy._rotationIndex) enemy._rotationIndex = 0;
+  if (!enemy._lastPhase) enemy._lastPhase = currentPhase.name;
+
+  // Reset rotation on phase change
+  if (enemy._lastPhase !== currentPhase.name) {
+    enemy._rotationIndex = 0;
+    enemy._lastPhase = currentPhase.name;
+  }
+
+  var rotation = currentPhase.rotation;
+  if (!rotation || rotation.length === 0) return null;
+
+  var abilityId = rotation[enemy._rotationIndex % rotation.length];
+  enemy._rotationIndex++;
+
+  return BOSS_ABILITIES[abilityId] || BOSS_ABILITIES.basic_attack;
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -1854,6 +1994,11 @@ module.exports = {
 
   // Turn-based combat AI
   decideTurnAction: decideTurnAction,
+
+  // Boss rotation system
+  BOSS_ROTATIONS: BOSS_ROTATIONS,
+  BOSS_ABILITIES: BOSS_ABILITIES,
+  getBossRotationAbility: getBossRotationAbility,
 
   // Sound propagation
   propagateSound: propagateSound,

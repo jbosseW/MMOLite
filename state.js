@@ -33,9 +33,6 @@ const playerZones = new Map();
 /** @type {Map<string, {x: number, y: number, facing: string}>} socketId -> position */
 const playerPositions = new Map();
 
-/** @type {Map<string, object>} battleId -> battle state */
-const activeBattles = new Map();
-
 /** @type {Map<string, object>} partyId -> party data */
 const parties = new Map();
 
@@ -48,12 +45,24 @@ const guilds = new Map();
 /** @type {Map<string, Array>} zoneId -> array of overworld monster objects */
 const zoneMonsters = new Map();
 
+/** @type {Map<string, {weather: string, updatedAt: number}>} biomeId -> weather state */
+const biomeWeather = new Map();
+
+function getBiomeWeather(biomeId) {
+  var entry = biomeWeather.get(biomeId);
+  return entry ? entry.weather : 'clear';
+}
+
+function setBiomeWeather(biomeId, weather) {
+  biomeWeather.set(biomeId, { weather: weather, updatedAt: Date.now() });
+}
+
 // World state
 const world = {
   timeOfDay: 'day',          // day, dusk, night, dawn
   weather: 'clear',          // clear, rain, storm, fog, snow
   dayStartedAt: Date.now(),
-  dayLengthMs: 20 * 60 * 1000, // 20 real minutes = 1 game day
+  dayLengthMs: 80 * 60 * 1000, // 80 real minutes = 1 game day
   activeEvents: [],
   // AI Event Director state
   directorState: {
@@ -61,7 +70,74 @@ const world = {
     narrativeDay: 0,
     activeWorldEvents: [],
   },
+  // Seasonal calendar
+  calendar: {
+    year: 500,
+    month: 1,        // 1-12
+    day: 1,          // 1-28
+    season: 'Frosthollow',
+    monthName: 'Deepmere',
+    lastAdvancedAt: Date.now(),
+    advanceIntervalMs: 24 * 60 * 60 * 1000,  // advance 1 day every real 24h
+  },
 };
+
+// ---------------------------------------------------------------------------
+// Calendar month definitions
+// ---------------------------------------------------------------------------
+var CALENDAR_MONTHS = [
+  { name: 'Deepmere',    season: 'Frosthollow' },
+  { name: 'Ironveil',    season: 'Frosthollow' },
+  { name: 'Thawmist',    season: 'Frosthollow' },
+  { name: 'Greenward',   season: 'Brightbloom' },
+  { name: 'Starbloom',   season: 'Brightbloom' },
+  { name: 'Solaren',     season: 'Brightbloom' },
+  { name: 'Highsun',     season: 'Sunreign'    },
+  { name: 'Forgefire',   season: 'Sunreign'    },
+  { name: 'Harvestmere', season: 'Sunreign'    },
+  { name: 'Glassfall',   season: 'Ashwane'     },
+  { name: 'Shadowmere',  season: 'Ashwane'     },
+  { name: 'Voidwatch',   season: 'Ashwane'     },
+];
+
+function advanceCalendar() {
+  var cal = world.calendar;
+  var now = Date.now();
+  if (now - cal.lastAdvancedAt < cal.advanceIntervalMs) return false;
+  cal.lastAdvancedAt = now;
+  cal.day++;
+  if (cal.day > 28) {
+    cal.day = 1;
+    cal.month++;
+    if (cal.month > 12) {
+      cal.month = 1;
+      cal.year++;
+    }
+    var monthDef = CALENDAR_MONTHS[cal.month - 1];
+    cal.monthName = monthDef.name;
+    cal.season = monthDef.season;
+  }
+  return true;
+}
+
+function getCalendar() {
+  return {
+    year: world.calendar.year,
+    month: world.calendar.month,
+    day: world.calendar.day,
+    season: world.calendar.season,
+    monthName: world.calendar.monthName,
+  };
+}
+
+function isNpcAsleep(npc, currentPhase) {
+  if (!npc || !npc.sleepPhases || npc.sleepPhases.length === 0) return false;
+  return npc.sleepPhases.indexOf(currentPhase) !== -1;
+}
+
+function getTimeOfDay() {
+  return world.timeOfDay;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -349,7 +425,7 @@ function addZoneChatMessage(zoneId, socketId, content) {
 
   zone.chatMessages.push(message);
   if (zone.chatMessages.length > MAX_ZONE_CHAT_MESSAGES) {
-    zone.chatMessages = zone.chatMessages.slice(-MAX_ZONE_CHAT_MESSAGES);
+    zone.chatMessages.shift();
   }
 
   return message;
@@ -591,35 +667,6 @@ function deleteInstance(instanceId) {
 }
 
 // ---------------------------------------------------------------------------
-// Battle operations
-// ---------------------------------------------------------------------------
-
-function createBattle(type, participants) {
-  const id = generateId();
-  const battle = {
-    id: id,
-    type: type,               // 'wild', 'pvp', 'npc'
-    participants: participants, // [{ socketId, monsters: [], activeMonster: 0 }]
-    turn: 0,
-    currentTurn: 0,           // index into participants
-    log: [],
-    state: 'active',          // active, finished
-    createdAt: Date.now(),
-  };
-  activeBattles.set(id, battle);
-  return battle;
-}
-
-function endBattle(battleId) {
-  const battle = activeBattles.get(battleId);
-  if (battle) {
-    battle.state = 'finished';
-    activeBattles.delete(battleId);
-  }
-  return battle;
-}
-
-// ---------------------------------------------------------------------------
 // Party operations
 // ---------------------------------------------------------------------------
 
@@ -666,9 +713,20 @@ function advanceWorldTime() {
     world.timeOfDay = 'night';
   }
 
-  // Random weather shift (small chance each check)
-  if (Math.random() < 0.05) {
-    world.weather = WEATHER_TYPES[Math.floor(Math.random() * WEATHER_TYPES.length)];
+  // Duration-based weather system
+  if (typeof world.weatherDuration !== 'number') {
+    world.weatherDuration = 3 + Math.floor(Math.random() * 6); // 3-8 periods
+  }
+  world.weatherDuration--;
+  if (world.weatherDuration <= 0) {
+    // Roll new weather with weighted probabilities
+    var roll = Math.random();
+    if (roll < 0.40)      world.weather = 'clear';
+    else if (roll < 0.65) world.weather = 'rain';
+    else if (roll < 0.80) world.weather = 'fog';
+    else if (roll < 0.90) world.weather = 'storm';
+    else                   world.weather = 'snow';
+    world.weatherDuration = 3 + Math.floor(Math.random() * 6); // 3-8 periods
   }
 }
 
@@ -684,7 +742,11 @@ function initDefaultZones() {
     width: 1600,
     height: 1200,
     npcs: [
-      { id: 'npc_card_merchant', name: 'Elara Brightscroll', x: 500, y: 350, type: 'card_shop', dialogue: 'Welcome, adventurer! I carry a fine selection of skill cards to help you on your journey.' },
+      { id: 'npc_card_merchant', name: 'Elara Brightscroll', x: 500, y: 350, type: 'card_shop', sleepPhases: ['night'], dialogue: 'Welcome, adventurer! I carry a fine selection of skill cards to help you on your journey.' },
+      { id: 'npc_holy_dominion_innkeeper', name: 'Innkeeper Mira', x: 250, y: 900, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_starter_town', type: 'wandering_merchant', name: 'Peddler Vance', x: 700, y: 450, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_starter_town', type: 'farmer', name: 'Farmer Aldric', x: 350, y: 550, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_starter_town', type: 'civilian', name: 'Marta the Weaver', x: 600, y: 800, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 800, y: 50, direction: 'north' },
@@ -693,6 +755,8 @@ function initDefaultZones() {
       { targetZone: 'overworld', x: 800, y: 1150, direction: 'south' },
       { targetZone: 'adventure_guild', x: 850, y: 400, direction: 'enter', label: 'Adventure Guild' },
       { targetZone: 'rift_antechamber', x: 1100, y: 350, direction: 'enter', label: 'The Rift' },
+      { targetZone: 'tavern_holy_dominion', x: 250, y: 950, direction: 'enter', label: 'The Last Crown Tavern' },
+      { targetZone: 'faction_hall_dominion', x: 1350, y: 950, direction: 'enter', label: 'Dominion Hall' },
     ],
     terrain: { water: [], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 1600, height: 1200 },
@@ -723,16 +787,21 @@ function initDefaultZones() {
     width: 2000,
     height: 1600,
     npcs: [
-      { id: 'npc_solara_priest', name: 'High Priest Alarion', x: 1000, y: 400, type: 'questgiver' },
-      { id: 'npc_solara_quartermaster', name: 'Imperial Quartermaster', x: 600, y: 700, type: 'shopkeeper' },
-      { id: 'npc_solara_inquisitor', name: 'Luminary Inquisitor', x: 1400, y: 700, type: 'guard' },
-      { id: 'portal_nexus_solara', name: 'Portal Nexus', x: 1000, y: 800, type: 'portal' },
+      { id: 'npc_solara_priest', name: 'High Priest Alarion', x: 1000, y: 400, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_solara_quartermaster', name: 'Imperial Quartermaster', x: 600, y: 700, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_solara_inquisitor', name: 'Luminary Inquisitor', x: 1400, y: 700, type: 'guard', sleepPhases: [] },
+      { id: 'portal_nexus_solara', name: 'Portal Nexus', x: 1000, y: 800, type: 'portal', sleepPhases: [] },
+      { id: 'npc_solara_innkeeper', name: 'Innkeeper Balthus', x: 350, y: 1200, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_solara', type: 'wandering_merchant', name: 'Silk Road Trader', x: 800, y: 500, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_solara', type: 'farmer', name: 'Grove Tender Ilya', x: 500, y: 1000, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_solara', type: 'civilian', name: 'Scholar Orin', x: 1200, y: 1100, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 1000, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 800, direction: 'west' },
       { targetZone: 'overworld', x: 1950, y: 800, direction: 'east' },
       { targetZone: 'overworld', x: 1000, y: 1550, direction: 'south' },
+      { targetZone: 'tavern_solara', x: 350, y: 1250, direction: 'enter', label: 'The Imperial Cup' },
     ],
     terrain: { water: [], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 2000, height: 1600 },
@@ -755,16 +824,22 @@ function initDefaultZones() {
     width: 1800,
     height: 1400,
     npcs: [
-      { id: 'npc_sylvaris_archivist', name: 'Archivist Elenwe', x: 900, y: 350, type: 'questgiver' },
-      { id: 'npc_sylvaris_sealkeeper', name: 'Seal Keeper Thandril', x: 500, y: 700, type: 'shopkeeper' },
-      { id: 'npc_sylvaris_herbalist', name: 'Herbalist Mithwen', x: 1300, y: 700, type: 'shopkeeper' },
-      { id: 'portal_nexus_sylvaris', name: 'Portal Nexus', x: 900, y: 700, type: 'portal' },
+      { id: 'npc_sylvaris_archivist', name: 'Archivist Elenwe', x: 900, y: 350, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_sylvaris_sealkeeper', name: 'Seal Keeper Thandril', x: 500, y: 700, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_sylvaris_herbalist', name: 'Herbalist Mithwen', x: 1300, y: 700, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'portal_nexus_sylvaris', name: 'Portal Nexus', x: 900, y: 700, type: 'portal', sleepPhases: [] },
+      { id: 'npc_sylvaris_innkeeper', name: 'Innkeeper Liriel', x: 300, y: 1050, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_sylvaris', type: 'wandering_merchant', name: 'Moon Market Vendor', x: 700, y: 500, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_sylvaris', type: 'farmer', name: 'Treefarm Elder', x: 1100, y: 900, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_sylvaris', type: 'civilian', name: 'Leaf-Keeper Aria', x: 500, y: 1000, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 900, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 700, direction: 'west' },
       { targetZone: 'overworld', x: 1750, y: 700, direction: 'east' },
       { targetZone: 'overworld', x: 900, y: 1350, direction: 'south' },
+      { targetZone: 'tavern_sylvaris', x: 300, y: 1100, direction: 'enter', label: 'The Ancient Root' },
+      { targetZone: 'faction_hall_rift_wardens', x: 1550, y: 400, direction: 'enter', label: 'Rift Wardens Lodge' },
     ],
     terrain: { water: [], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 1800, height: 1400 },
@@ -789,16 +864,22 @@ function initDefaultZones() {
     width: 1600,
     height: 1400,
     npcs: [
-      { id: 'npc_ironhold_forgemaster', name: 'Forgemaster Grundin', x: 800, y: 400, type: 'shopkeeper' },
-      { id: 'npc_ironhold_stonespeaker', name: 'Stone Speaker Thora', x: 400, y: 700, type: 'questgiver' },
-      { id: 'npc_ironhold_tradewarden', name: 'Trade Warden Borik', x: 1200, y: 700, type: 'shopkeeper' },
-      { id: 'portal_nexus_ironhold', name: 'Portal Nexus', x: 800, y: 700, type: 'portal' },
+      { id: 'npc_ironhold_forgemaster', name: 'Forgemaster Grundin', x: 800, y: 400, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_ironhold_stonespeaker', name: 'Stone Speaker Thora', x: 400, y: 700, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_ironhold_tradewarden', name: 'Trade Warden Borik', x: 1200, y: 700, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'portal_nexus_ironhold', name: 'Portal Nexus', x: 800, y: 700, type: 'portal', sleepPhases: [] },
+      { id: 'npc_ironhold_innkeeper', name: 'Innkeeper Burra', x: 250, y: 1050, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_ironhold', type: 'wandering_merchant', name: 'Deep Trader Brund', x: 600, y: 500, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_ironhold', type: 'farmer', name: 'Mushroom Farmer Gert', x: 1000, y: 900, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_ironhold', type: 'civilian', name: 'Stonewife Hilda', x: 500, y: 1000, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 800, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 700, direction: 'west' },
       { targetZone: 'overworld', x: 1550, y: 700, direction: 'east' },
       { targetZone: 'overworld', x: 800, y: 1350, direction: 'south' },
+      { targetZone: 'tavern_ironhold', x: 250, y: 1100, direction: 'enter', label: 'The Stone and Flame' },
+      { targetZone: 'faction_hall_iron_vanguard', x: 1350, y: 400, direction: 'enter', label: 'Iron Vanguard Barracks' },
     ],
     terrain: { water: [], mountain: ['north', 'east'] },
     protectedArea: { x: 0, y: 0, width: 1600, height: 1400 },
@@ -823,16 +904,21 @@ function initDefaultZones() {
     width: 1600,
     height: 1200,
     npcs: [
-      { id: 'npc_kragmor_warchief', name: 'Warchief Gorruk', x: 800, y: 350, type: 'questgiver' },
-      { id: 'npc_kragmor_beastmaster', name: 'Beastmaster Yalka', x: 400, y: 600, type: 'shopkeeper' },
-      { id: 'npc_kragmor_lorekeeper', name: 'Lorekeeper Narsk', x: 1200, y: 600, type: 'questgiver' },
-      { id: 'portal_nexus_kragmor', name: 'Portal Nexus', x: 800, y: 600, type: 'portal' },
+      { id: 'npc_kragmor_warchief', name: 'Warchief Gorruk', x: 800, y: 350, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_kragmor_beastmaster', name: 'Beastmaster Yalka', x: 400, y: 600, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_kragmor_lorekeeper', name: 'Lorekeeper Narsk', x: 1200, y: 600, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'portal_nexus_kragmor', name: 'Portal Nexus', x: 800, y: 600, type: 'portal', sleepPhases: [] },
+      { id: 'npc_kragmor_innkeeper', name: 'Mead-Keeper Bruka', x: 250, y: 900, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_kragmor', type: 'wandering_merchant', name: 'Warbazaar Vendor', x: 600, y: 450, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_kragmor', type: 'farmer', name: 'Steppe Herder Grak', x: 1000, y: 800, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_kragmor', type: 'civilian', name: 'Orcish Lookout Uth', x: 500, y: 750, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 800, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 600, direction: 'west' },
       { targetZone: 'overworld', x: 1550, y: 600, direction: 'east' },
       { targetZone: 'overworld', x: 800, y: 1150, direction: 'south' },
+      { targetZone: 'tavern_kragmor', x: 250, y: 950, direction: 'enter', label: 'The Mead Hall' },
     ],
     terrain: { water: [], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 1600, height: 1200 },
@@ -856,16 +942,22 @@ function initDefaultZones() {
     width: 1200,
     height: 1000,
     npcs: [
-      { id: 'npc_bonetrap_boss', name: 'Boss Skrag', x: 600, y: 300, type: 'questgiver' },
-      { id: 'npc_bonetrap_tinkerer', name: 'Tinkerer Grix', x: 300, y: 500, type: 'shopkeeper' },
-      { id: 'npc_bonetrap_shaman', name: 'Shaman Zeek', x: 900, y: 500, type: 'shopkeeper' },
-      { id: 'portal_nexus_bonetrap', name: 'Portal Nexus', x: 600, y: 500, type: 'portal' },
+      { id: 'npc_bonetrap_boss', name: 'Boss Skrag', x: 600, y: 300, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_bonetrap_tinkerer', name: 'Tinkerer Grix', x: 300, y: 500, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_bonetrap_shaman', name: 'Shaman Zeek', x: 900, y: 500, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'portal_nexus_bonetrap', name: 'Portal Nexus', x: 600, y: 500, type: 'portal', sleepPhases: [] },
+      { id: 'npc_bonetrap_innkeeper', name: 'Innkeeper Skiv', x: 150, y: 750, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_bonetrap', type: 'wandering_merchant', name: 'Shadow Peddler', x: 450, y: 400, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_bonetrap', type: 'farmer', name: 'Bog Farmer Skrix', x: 750, y: 700, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_bonetrap', type: 'civilian', name: 'Sly Watcher Niv', x: 400, y: 850, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 600, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 500, direction: 'west' },
       { targetZone: 'overworld', x: 1150, y: 500, direction: 'east' },
       { targetZone: 'overworld', x: 600, y: 950, direction: 'south' },
+      { targetZone: 'tavern_bonetrap', x: 150, y: 800, direction: 'enter', label: 'The Gnawed Bone' },
+      { targetZone: 'faction_hall_veiled_hand', x: 1050, y: 800, direction: 'enter', label: 'The Veiled Hand Den' },
     ],
     terrain: { water: [], mountain: ['north'] },
     protectedArea: { x: 0, y: 0, width: 1200, height: 1000 },
@@ -888,16 +980,21 @@ function initDefaultZones() {
     width: 1400,
     height: 1200,
     npcs: [
-      { id: 'npc_murkmire_elder', name: 'Sect Elder Ssethik', x: 700, y: 350, type: 'questgiver' },
-      { id: 'npc_murkmire_sage', name: 'River Sage Kaaliss', x: 400, y: 600, type: 'shopkeeper' },
-      { id: 'npc_murkmire_watcher', name: 'Silent Watcher', x: 1000, y: 600, type: 'guard' },
-      { id: 'portal_nexus_murkmire', name: 'Portal Nexus', x: 700, y: 600, type: 'portal' },
+      { id: 'npc_murkmire_elder', name: 'Sect Elder Ssethik', x: 700, y: 350, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_murkmire_sage', name: 'River Sage Kaaliss', x: 400, y: 600, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_murkmire_watcher', name: 'Silent Watcher', x: 1000, y: 600, type: 'guard', sleepPhases: [] },
+      { id: 'portal_nexus_murkmire', name: 'Portal Nexus', x: 700, y: 600, type: 'portal', sleepPhases: [] },
+      { id: 'npc_murkmire_innkeeper', name: 'Innkeeper Sssali', x: 250, y: 900, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_murkmire', type: 'wandering_merchant', name: 'Tidemarket Trader', x: 550, y: 450, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_murkmire', type: 'farmer', name: 'Swamp Fisher Sseth', x: 850, y: 800, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_murkmire', type: 'civilian', name: 'River-Watcher Kessa', x: 500, y: 1000, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 700, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 600, direction: 'west' },
       { targetZone: 'overworld', x: 1350, y: 600, direction: 'east' },
       { targetZone: 'overworld', x: 700, y: 1150, direction: 'south' },
+      { targetZone: 'tavern_murkmire', x: 250, y: 950, direction: 'enter', label: 'The Sunken Log' },
     ],
     terrain: { water: ['west', 'south'], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 1400, height: 1200 },
@@ -922,16 +1019,21 @@ function initDefaultZones() {
     width: 2000,
     height: 1600,
     npcs: [
-      { id: 'npc_mechspire_engineer', name: 'Chief Engineer Sparkwhistle', x: 1000, y: 400, type: 'questgiver' },
-      { id: 'npc_mechspire_automaton', name: 'Automaton Coordinator', x: 600, y: 700, type: 'shopkeeper' },
-      { id: 'npc_mechspire_dockmaster', name: 'Dock Master Fizzbolt', x: 1400, y: 700, type: 'shopkeeper' },
-      { id: 'portal_nexus_mechspire', name: 'Portal Nexus', x: 1000, y: 800, type: 'portal' },
+      { id: 'npc_mechspire_engineer', name: 'Chief Engineer Sparkwhistle', x: 1000, y: 400, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_mechspire_automaton', name: 'Automaton Coordinator', x: 600, y: 700, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_mechspire_dockmaster', name: 'Dock Master Fizzbolt', x: 1400, y: 700, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'portal_nexus_mechspire', name: 'Portal Nexus', x: 1000, y: 800, type: 'portal', sleepPhases: [] },
+      { id: 'npc_mechspire_innkeeper', name: 'Innkeeper Cogsworth', x: 400, y: 1300, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_mechspire', type: 'wandering_merchant', name: 'Cog Merchant Wren', x: 800, y: 500, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_mechspire', type: 'farmer', name: 'Gear Farm Operator', x: 1200, y: 1000, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_mechspire', type: 'civilian', name: 'Apprentice Tinker', x: 600, y: 1100, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 1000, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 800, direction: 'west' },
       { targetZone: 'overworld', x: 1950, y: 800, direction: 'east' },
       { targetZone: 'overworld', x: 1000, y: 1550, direction: 'south' },
+      { targetZone: 'tavern_mechspire', x: 400, y: 1350, direction: 'enter', label: 'The Gear and Spanner' },
     ],
     terrain: { water: [], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 2000, height: 1600 },
@@ -956,16 +1058,22 @@ function initDefaultZones() {
     width: 1400,
     height: 1200,
     npcs: [
-      { id: 'npc_clockharbor_master', name: 'Harbormaster Coppercoil', x: 700, y: 350, type: 'questgiver' },
-      { id: 'npc_clockharbor_customs', name: 'Customs Officer', x: 400, y: 600, type: 'guard' },
-      { id: 'npc_clockharbor_mechanic', name: 'Ship Mechanic', x: 1000, y: 600, type: 'shopkeeper' },
-      { id: 'portal_nexus_clockwork_harbor', name: 'Portal Nexus', x: 700, y: 600, type: 'portal' },
+      { id: 'npc_clockharbor_master', name: 'Harbormaster Coppercoil', x: 700, y: 350, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_clockharbor_customs', name: 'Customs Officer', x: 400, y: 600, type: 'guard', sleepPhases: [] },
+      { id: 'npc_clockharbor_mechanic', name: 'Ship Mechanic', x: 1000, y: 600, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'portal_nexus_clockwork_harbor', name: 'Portal Nexus', x: 700, y: 600, type: 'portal', sleepPhases: [] },
+      { id: 'npc_clockharbor_innkeeper', name: 'Innkeeper Saltwick', x: 250, y: 900, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_clockwork_harbor_town', type: 'wandering_merchant', name: 'Harbor Trader', x: 550, y: 450, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_clockwork_harbor_town', type: 'farmer', name: 'Dockside Fishwife', x: 850, y: 800, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_clockwork_harbor_town', type: 'civilian', name: 'Sailor Fen', x: 500, y: 750, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 700, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 600, direction: 'west' },
       { targetZone: 'overworld', x: 1350, y: 600, direction: 'east' },
       { targetZone: 'overworld', x: 700, y: 1150, direction: 'south' },
+      { targetZone: 'tavern_clockwork_harbor', x: 250, y: 950, direction: 'enter', label: 'The Salt Keel' },
+      { targetZone: 'faction_hall_merchant_league', x: 1200, y: 400, direction: 'enter', label: 'Merchant League House' },
     ],
     terrain: { water: ['south', 'east'], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 1400, height: 1200 },
@@ -988,16 +1096,21 @@ function initDefaultZones() {
     width: 1600,
     height: 1200,
     npcs: [
-      { id: 'npc_fortunes_matriarch', name: 'Matriarch Whisperwind', x: 800, y: 350, type: 'questgiver' },
-      { id: 'npc_fortunes_casino', name: 'Casino Master Lucky', x: 500, y: 600, type: 'shopkeeper' },
-      { id: 'npc_fortunes_harbor', name: 'Harbormaster Sandclaw', x: 1100, y: 600, type: 'shopkeeper' },
-      { id: 'portal_nexus_fortunes_rest', name: 'Portal Nexus', x: 800, y: 600, type: 'portal' },
+      { id: 'npc_fortunes_matriarch', name: 'Matriarch Whisperwind', x: 800, y: 350, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_fortunes_casino', name: 'Casino Master Lucky', x: 500, y: 600, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_fortunes_harbor', name: 'Harbormaster Sandclaw', x: 1100, y: 600, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'portal_nexus_fortunes_rest', name: 'Portal Nexus', x: 800, y: 600, type: 'portal', sleepPhases: [] },
+      { id: 'npc_fortunes_innkeeper', name: 'Innkeeper Dustpaw', x: 250, y: 900, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'wandering_merchant_fortunes_rest', type: 'wandering_merchant', name: 'Desert Caravan Trader', x: 650, y: 450, sleepPhases: ['night'], dialogue: 'wandering_merchant', stock: ['herbs', 'potions', 'misc'] },
+      { id: 'farmer_fortunes_rest', type: 'farmer', name: 'Oasis Gardener', x: 1000, y: 800, sleepPhases: ['night'], dialogue: 'farmer' },
+      { id: 'civilian_fortunes_rest', type: 'civilian', name: 'Fortune Seeker', x: 400, y: 750, sleepPhases: ['night'], dialogue: 'civilian' },
     ],
     connections: [
       { targetZone: 'overworld', x: 800, y: 50, direction: 'north' },
       { targetZone: 'overworld', x: 50, y: 600, direction: 'west' },
       { targetZone: 'overworld', x: 1550, y: 600, direction: 'east' },
       { targetZone: 'overworld', x: 800, y: 1150, direction: 'south' },
+      { targetZone: 'tavern_fortunes_rest', x: 250, y: 950, direction: 'enter', label: 'The Oasis Den' },
     ],
     terrain: { water: [], mountain: [] },
     protectedArea: { x: 0, y: 0, width: 1600, height: 1200 },
@@ -1022,7 +1135,7 @@ function initDefaultZones() {
     width: 800,
     height: 600,
     npcs: [
-      { id: 'dungeon_entrance', name: 'The Rift Entrance', x: 400, y: 250, type: 'dungeon_entrance' },
+      { id: 'dungeon_entrance', name: 'The Rift Entrance', x: 400, y: 250, type: 'dungeon_entrance', sleepPhases: ['night'] },
     ],
     connections: [
       { targetZone: 'starter_town', x: 400, y: 580, direction: 'south', label: 'The Holy Dominion' },
@@ -1041,10 +1154,10 @@ function initDefaultZones() {
     width: 600,
     height: 500,
     npcs: [
-      { id: 'guild_master', name: 'Guildmaster Aldric', x: 300, y: 150, type: 'adventure_guild',
+      { id: 'guild_master', name: 'Guildmaster Aldric', x: 300, y: 150, type: 'adventure_guild', sleepPhases: ['night'],
         dialogue: 'Welcome, adventurer! The Rift awaits those brave enough to descend. Sign up with the Adventure Guild to begin your journey.' },
-      { id: 'quest_board', name: 'Quest Board', x: 450, y: 200, type: 'dungeon_quest_board' },
-      { id: 'leaderboard_npc', name: 'Hall of Heroes', x: 150, y: 200, type: 'dungeon_leaderboard' },
+      { id: 'quest_board', name: 'Quest Board', x: 450, y: 200, type: 'dungeon_quest_board', sleepPhases: ['night'] },
+      { id: 'leaderboard_npc', name: 'Hall of Heroes', x: 150, y: 200, type: 'dungeon_leaderboard', sleepPhases: ['night'] },
     ],
     connections: [
       { targetZone: 'starter_town', x: 300, y: 480, direction: 'south', label: 'The Holy Dominion' },
@@ -1053,6 +1166,301 @@ function initDefaultZones() {
     protectedArea: { x: 0, y: 0, width: 600, height: 500 },
   });
   console.log('[state] Created zone: Adventure Guild');
+
+  // -------------------------------------------------------------------------
+  // Town Taverns — one per anchor town, each with innkeeper + bard
+  // -------------------------------------------------------------------------
+
+  createZone('tavern_holy_dominion', {
+    name: 'The Last Crown Tavern',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_holy_dominion_tavern_keeper', name: 'Innkeeper Mira', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_holy_dominion_bard', name: 'Wandering Bard', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_holy_dominion_patron', name: 'Old Soldier', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'starter_town', x: 300, y: 430, direction: 'south', label: 'The Holy Dominion' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  createZone('tavern_solara', {
+    name: 'The Imperial Cup',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_solara_tavern_keeper', name: 'Innkeeper Balthus', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_solara_bard', name: 'Imperial Bard', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_solara_patron', name: 'Off-Duty Inquisitor', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'solara', x: 300, y: 430, direction: 'south', label: 'Solara' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  createZone('tavern_sylvaris', {
+    name: 'The Ancient Root',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_sylvaris_tavern_keeper', name: 'Innkeeper Liriel', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_sylvaris_bard', name: 'Elven Songweaver', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_sylvaris_patron', name: 'Elven Scholar', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'sylvaris', x: 300, y: 430, direction: 'south', label: 'Sylvaris' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  createZone('tavern_ironhold', {
+    name: 'The Stone and Flame',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_ironhold_tavern_keeper', name: 'Innkeeper Burra', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_ironhold_bard', name: 'Dwarven Skald', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_ironhold_patron', name: 'Retired Miner', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'ironhold', x: 300, y: 430, direction: 'south', label: 'Ironhold' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  createZone('tavern_kragmor', {
+    name: 'The Mead Hall',
+    type: 'building',
+    width: 700,
+    height: 500,
+    npcs: [
+      { id: 'npc_kragmor_tavern_keeper', name: 'Mead-Keeper Bruka', x: 350, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_kragmor_bard', name: 'Orcish War-Singer', x: 550, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_kragmor_patron', name: 'Grizzled Warrior', x: 150, y: 350, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'kragmor', x: 350, y: 480, direction: 'south', label: 'Kragmor' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 700, height: 500 },
+  });
+
+  createZone('tavern_bonetrap', {
+    name: 'The Gnawed Bone',
+    type: 'building',
+    width: 500,
+    height: 400,
+    npcs: [
+      { id: 'npc_bonetrap_tavern_keeper', name: 'Innkeeper Skiv', x: 250, y: 130, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_bonetrap_bard', name: 'Goblin Howler', x: 400, y: 170, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_bonetrap_patron', name: 'Suspicious Goblin', x: 120, y: 280, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'bonetrap', x: 250, y: 380, direction: 'south', label: 'BoneTrap' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 500, height: 400 },
+  });
+
+  createZone('tavern_murkmire', {
+    name: 'The Sunken Log',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_murkmire_tavern_keeper', name: 'Innkeeper Sssali', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_murkmire_bard', name: 'Lizardfolk Chanter', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_murkmire_patron', name: 'River Scout', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'murkmire', x: 300, y: 430, direction: 'south', label: 'Murkmire' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  createZone('tavern_mechspire', {
+    name: 'The Gear and Spanner',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_mechspire_tavern_keeper', name: 'Innkeeper Cogsworth', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_mechspire_bard', name: 'Gnomish Harmonist', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_mechspire_patron', name: 'Off-Duty Engineer', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'mechspire', x: 300, y: 430, direction: 'south', label: 'Mechspire' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  createZone('tavern_clockwork_harbor', {
+    name: 'The Salt Keel',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_clockharbor_tavern_keeper', name: 'Innkeeper Saltwick', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_clockharbor_bard', name: 'Sea Shanty Singer', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_clockharbor_patron', name: 'Dockworker', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'clockwork_harbor_town', x: 300, y: 430, direction: 'south', label: 'Clockwork Harbor' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  createZone('tavern_fortunes_rest', {
+    name: 'The Oasis Den',
+    type: 'building',
+    width: 600,
+    height: 450,
+    npcs: [
+      { id: 'npc_fortunes_tavern_keeper', name: 'Innkeeper Dustpaw', x: 300, y: 150, type: 'innkeeper', sleepPhases: ['day'] },
+      { id: 'npc_fortunes_bard', name: 'Catfolk Storyteller', x: 500, y: 200, type: 'bard', sleepPhases: ['dawn', 'day'] },
+      { id: 'npc_fortunes_patron', name: 'Desert Wanderer', x: 150, y: 300, type: 'gossip', sleepPhases: ['dawn'] },
+    ],
+    connections: [{ targetZone: 'fortunes_rest', x: 300, y: 430, direction: 'south', label: "Fortune's Rest" }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 600, height: 450 },
+  });
+
+  // -------------------------------------------------------------------------
+  // Faction Halls — 5 key faction buildings in their home towns
+  // -------------------------------------------------------------------------
+
+  createZone('faction_hall_dominion', {
+    name: 'Dominion Hall',
+    type: 'building',
+    width: 700,
+    height: 550,
+    npcs: [
+      { id: 'npc_faction_dominion_liaison', name: 'High Commander Aldren', x: 350, y: 150, type: 'faction_liaison_dominion', sleepPhases: ['night'] },
+      { id: 'npc_faction_dominion_guard', name: 'Faith Guardian', x: 550, y: 250, type: 'guard', sleepPhases: [] },
+      { id: 'npc_faction_dominion_cleric', name: 'War Cleric', x: 150, y: 250, type: 'questgiver', sleepPhases: ['night'] },
+    ],
+    connections: [{ targetZone: 'starter_town', x: 350, y: 530, direction: 'south', label: 'The Holy Dominion' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 700, height: 550 },
+  });
+  console.log('[state] Created zone: Dominion Hall');
+
+  createZone('faction_hall_veiled_hand', {
+    name: 'The Veiled Hand Den',
+    type: 'building',
+    width: 500,
+    height: 400,
+    npcs: [
+      { id: 'npc_faction_veiled_hand_liaison', name: 'Shadow Broker', x: 250, y: 150, type: 'faction_liaison_veiled_hand', sleepPhases: ['night'] },
+      { id: 'npc_faction_veiled_fence', name: 'The Fence', x: 400, y: 250, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_faction_veiled_watcher', name: 'Hooded Watcher', x: 100, y: 250, type: 'guard', sleepPhases: [] },
+    ],
+    connections: [{ targetZone: 'bonetrap', x: 250, y: 380, direction: 'south', label: 'BoneTrap' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 500, height: 400 },
+  });
+  console.log('[state] Created zone: Veiled Hand Den');
+
+  createZone('faction_hall_rift_wardens', {
+    name: 'Rift Wardens Lodge',
+    type: 'building',
+    width: 650,
+    height: 500,
+    npcs: [
+      { id: 'npc_faction_rift_wardens_liaison', name: 'Warden Captain Thessaly', x: 325, y: 150, type: 'faction_liaison_rift_wardens', sleepPhases: ['night'] },
+      { id: 'npc_faction_rift_wardens_scholar', name: 'Rift Scholar Aewyn', x: 500, y: 250, type: 'questgiver', sleepPhases: ['night'] },
+      { id: 'npc_faction_rift_wardens_guard', name: 'Lodge Sentinel', x: 150, y: 250, type: 'guard', sleepPhases: [] },
+    ],
+    connections: [{ targetZone: 'sylvaris', x: 325, y: 480, direction: 'south', label: 'Sylvaris' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 650, height: 500 },
+  });
+  console.log('[state] Created zone: Rift Wardens Lodge');
+
+  createZone('faction_hall_merchant_league', {
+    name: 'Merchant League Counting House',
+    type: 'building',
+    width: 650,
+    height: 500,
+    npcs: [
+      { id: 'npc_faction_merchant_league_liaison', name: 'League Factor Caldris', x: 325, y: 150, type: 'faction_liaison_merchant_league', sleepPhases: ['night'] },
+      { id: 'npc_faction_merchant_clerk', name: 'Trade Clerk', x: 500, y: 250, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_faction_merchant_guard', name: 'League Guard', x: 150, y: 250, type: 'guard', sleepPhases: [] },
+    ],
+    connections: [{ targetZone: 'clockwork_harbor_town', x: 325, y: 480, direction: 'south', label: 'Clockwork Harbor' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 650, height: 500 },
+  });
+  console.log('[state] Created zone: Merchant League Counting House');
+
+  createZone('faction_hall_iron_vanguard', {
+    name: 'Iron Vanguard Barracks',
+    type: 'building',
+    width: 700,
+    height: 550,
+    npcs: [
+      { id: 'npc_faction_iron_vanguard_liaison', name: 'Vanguard Commander Thrak', x: 350, y: 150, type: 'faction_liaison_iron_vanguard', sleepPhases: ['night'] },
+      { id: 'npc_faction_iron_arms_master', name: 'Arms Master Borin', x: 550, y: 250, type: 'shopkeeper', sleepPhases: ['night'] },
+      { id: 'npc_faction_iron_sentry', name: 'Barracks Sentry', x: 150, y: 250, type: 'guard', sleepPhases: [] },
+    ],
+    connections: [{ targetZone: 'ironhold', x: 350, y: 530, direction: 'south', label: 'Ironhold' }],
+    hidden: true,
+    protectedArea: { x: 0, y: 0, width: 700, height: 550 },
+  });
+  console.log('[state] Created zone: Iron Vanguard Barracks');
+
+  // -------------------------------------------------------------------------
+  // Abandoned Crypt — populated dynamically by vampire director
+  // -------------------------------------------------------------------------
+  zones.set('abandoned_crypt_template', {
+    id: 'abandoned_crypt_template',
+    type: 'dungeon',
+    name: 'Abandoned Crypt',
+    theme: 'vampire_castle',
+    width: 400,
+    height: 300,
+    hidden: true,
+    vampireCrypt: true,
+    chatMessages: [],
+    members: new Set(),
+    items: [],
+    resources: [],
+    placedObjects: [],
+    protectedArea: null,
+    terrain: null,
+    connections: [],
+    players: [],
+    npcs: [
+      { id: 'vampire_thrall_1', type: 'vampire_npc', name: 'Hollowed Thrall', x: 150, y: 120, sleepPhases: ['day', 'dawn', 'dusk'], dialogue: 'vampire_npc' },
+      { id: 'vampire_thrall_2', type: 'vampire_npc', name: 'Night Stalker', x: 250, y: 180, sleepPhases: ['day', 'dawn', 'dusk'], dialogue: 'vampire_npc' },
+    ],
+    createdAt: Date.now(),
+  });
+  console.log('[state] Created zone: Abandoned Crypt (template)');
+
+  // -------------------------------------------------------------------------
+  // Town Jail — shared structure used per-town by prison system
+  // -------------------------------------------------------------------------
+  zones.set('town_jail', {
+    id: 'town_jail',
+    type: 'building',
+    name: 'Town Jail',
+    isJail: true,
+    width: 400,
+    height: 300,
+    hidden: false,
+    chatMessages: [],
+    members: new Set(),
+    items: [],
+    resources: [],
+    placedObjects: [],
+    protectedArea: { x: 0, y: 0, width: 400, height: 300 },
+    terrain: null,
+    connections: [],
+    players: [],
+    npcs: [
+      { id: 'jailer_main', type: 'jailer', name: 'The Jailer', x: 150, y: 100, sleepPhases: [], dialogue: 'jailer' },
+      { id: 'jail_guard_1', type: 'guard', name: 'Jail Guard', x: 250, y: 100, sleepPhases: [], dialogue: 'guard' },
+    ],
+    createdAt: Date.now(),
+  });
+  console.log('[state] Created zone: Town Jail');
 
   // -------------------------------------------------------------------------
   // Overworld — massive chunk-based open world with lazy generation
@@ -1178,7 +1586,6 @@ function wipeEphemeral() {
   users.clear();
   playerZones.clear();
   playerPositions.clear();
-  activeBattles.clear();
   instances.clear();
   parties.clear();
   playerPartyMap.clear();
@@ -1202,6 +1609,9 @@ function wipeEphemeral() {
     world.directorState.activeWorldEvents = [];
   }
 
+  // Clear survival visited chunks (BUG-1: grows forever without cleanup)
+  if (module.exports._survivalVisitedChunks) module.exports._survivalVisitedChunks.clear();
+
   // Clear shared Redis state too
   stateSync.wipeSharedState();
 
@@ -1224,7 +1634,6 @@ module.exports = {
   instances,
   playerZones,
   playerPositions,
-  activeBattles,
   parties,
   playerPartyMap,
   guilds,
@@ -1261,10 +1670,6 @@ module.exports = {
   createInstance,
   deleteInstance,
 
-  // Battle ops
-  createBattle,
-  endBattle,
-
   // Party ops
   createParty,
   getPlayerParty,
@@ -1274,10 +1679,22 @@ module.exports = {
   worldgen,
   getOrGenerateChunk,
 
+  // Calendar
+  advanceCalendar,
+  getCalendar,
+  isNpcAsleep,
+  getTimeOfDay,
+  CALENDAR_MONTHS,
+
   // Lifecycle
   initDefaultZones,
   wipeEphemeral,
   initSync,
+
+  // Per-biome weather
+  biomeWeather,
+  getBiomeWeather,
+  setBiomeWeather,
 
   // Sanitization
   sanitizeText,

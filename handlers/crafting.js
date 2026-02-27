@@ -5,10 +5,26 @@
 var crypto = require('crypto');
 var rpgData = require('../rpg-data');
 var challengesHandler = require('./challenges');
+var knowledgeHandler = require('./knowledge');
 var lootGen = require('../loot-generator');
 
 // Per-account craft lock: prevents concurrent craft_item double-spend
 var craftLocks = new Set();
+
+// ---------------------------------------------------------------------------
+// Quality System (Crafting Minigame)
+// ---------------------------------------------------------------------------
+
+var QUALITY_TIERS = {
+  poor:       { name: 'Poor',       multiplier: 0.75 },
+  normal:     { name: 'Normal',     multiplier: 1.00 },
+  good:       { name: 'Good',       multiplier: 1.25 },
+  excellent:  { name: 'Excellent',  multiplier: 1.50 },
+  masterwork: { name: 'Masterwork', multiplier: 2.00 },
+};
+
+var QUALITY_CRAFT_SKILL_THRESHOLD = 10; // only recipes where max skillReq >= 10 get minigame
+var pendingMinigames = new Map(); // socketId -> { recipeId, windowStart, windowEnd, expiresAt, account_key }
 
 // ---------------------------------------------------------------------------
 // Recipe definitions
@@ -1022,6 +1038,151 @@ var RECIPES = {
   mithril_necklace: { station: 'jewelers_bench', cost: { mithril_bar: 3, gem_cut: 3, mana_crystal: 2 }, output: { type: 'mithril_necklace', name: 'Mithril Necklace' }, skillReq: { jewelcrafting: 18 } },
   ruby_pendant: { station: 'jewelers_bench', cost: { gold_bar: 2, gem_cut: 3 }, output: { type: 'ruby_pendant', name: 'Ruby Pendant' }, skillReq: { jewelcrafting: 12 } },
   enchanted_ring: { station: 'jewelers_bench', cost: { gold_bar: 3, gem_cut: 2, mana_crystal: 2 }, output: { type: 'enchanted_ring', name: 'Enchanted Ring' }, skillReq: { jewelcrafting: 14, enchanting: 5 } },
+
+  // ===== STRUCTURAL RECIPES (base building) =====
+  stone_wall: { station: 'none', cost: { stone: 8 }, output: { type: 'stone_wall', name: 'Stone Wall' }, placeable: true, skillReq: { crafting: 3 } },
+  fence: { station: 'none', cost: { wood: 3 }, output: { type: 'fence', name: 'Wooden Fence' }, placeable: true },
+  stone_fence: { station: 'none', cost: { stone: 4 }, output: { type: 'stone_fence', name: 'Stone Fence' }, placeable: true, skillReq: { crafting: 2 } },
+  iron_fence: { station: 'iron_anvil', cost: { iron_bar: 4 }, output: { type: 'iron_fence', name: 'Iron Fence' }, placeable: true, skillReq: { crafting: 5 } },
+  window: { station: 'none', cost: { wood: 4, glass: 2 }, output: { type: 'window', name: 'Window' }, placeable: true, skillReq: { crafting: 3, glassworking: 2 } },
+  floor_tile: { station: 'none', cost: { wood: 2 }, output: { type: 'floor_tile', name: 'Wood Floor Tile' }, placeable: true },
+  stone_floor: { station: 'none', cost: { stone: 3 }, output: { type: 'stone_floor', name: 'Stone Floor' }, placeable: true, skillReq: { crafting: 2 } },
+  carpet: { station: 'loom', cost: { wool: 4, thread: 2 }, output: { type: 'carpet', name: 'Carpet' }, placeable: true, skillReq: { sewing: 3 } },
+  stairs: { station: 'none', cost: { wood: 6, stone: 4 }, output: { type: 'stairs', name: 'Stairs' }, placeable: true, skillReq: { crafting: 5 } },
+  roof_tile: { station: 'none', cost: { wood: 3, stone: 2 }, output: { type: 'roof_tile', name: 'Roof Tile' }, placeable: true, skillReq: { crafting: 2 } },
+
+  // ===== DECORATIVE RECIPES =====
+  lantern: { station: 'none', cost: { iron_bar: 2, glass: 1, oil: 1 }, output: { type: 'lantern', name: 'Lantern' }, placeable: true, skillReq: { crafting: 3 } },
+  torch_sconce: { station: 'none', cost: { iron_bar: 1, wood: 2 }, output: { type: 'torch_sconce', name: 'Torch Sconce' }, placeable: true },
+  signpost: { station: 'none', cost: { wood: 5 }, output: { type: 'signpost', name: 'Signpost' }, placeable: true },
+  flower_pot: { station: 'none', cost: { stone: 3 }, output: { type: 'flower_pot', name: 'Flower Pot' }, placeable: true },
+  painting: { station: 'none', cost: { wood: 3, cloth: 2, sigil_ink: 1 }, output: { type: 'painting', name: 'Painting' }, placeable: true, skillReq: { crafting: 5 } },
+  rug: { station: 'loom', cost: { wool: 3, thread: 2 }, output: { type: 'rug', name: 'Rug' }, placeable: true, skillReq: { sewing: 2 } },
+  clock: { station: 'none', cost: { cogs: 4, gears: 2, wood: 3 }, output: { type: 'clock', name: 'Clock' }, placeable: true, skillReq: { cogworking: 5 } },
+  trophy_mount: { station: 'none', cost: { wood: 5, iron_bar: 2 }, output: { type: 'trophy_mount', name: 'Trophy Mount' }, placeable: true, skillReq: { crafting: 4 } },
+  statue: { station: 'none', cost: { stone: 15, mana_crystal: 1 }, output: { type: 'statue', name: 'Statue' }, placeable: true, skillReq: { crafting: 10 } },
+
+  // ===== FUNCTIONAL RECIPES (farming) =====
+  scarecrow: { station: 'none', cost: { wood: 10, wheat: 5 }, output: { type: 'scarecrow', name: 'Scarecrow' }, placeable: true, skillReq: { farming: 5 } },
+  sprinkler: { station: 'iron_anvil', cost: { iron_bar: 8, cogs: 3, gears: 2, springs: 1 }, output: { type: 'sprinkler', name: 'Sprinkler' }, placeable: true, skillReq: { crafting: 12, cogworking: 8 } },
+  well: { station: 'none', cost: { stone: 25, iron_bar: 5 }, output: { type: 'well', name: 'Well' }, placeable: true, skillReq: { crafting: 10 } },
+  animal_pen: { station: 'none', cost: { wood: 15, iron_bar: 4 }, output: { type: 'animal_pen', name: 'Animal Pen' }, placeable: true, skillReq: { crafting: 5, farming: 3 } },
+  garden_bed: { station: 'none', cost: { wood: 6, stone: 2 }, output: { type: 'garden_bed', name: 'Garden Bed' }, placeable: true, skillReq: { farming: 1 } },
+
+  // ===== UPGRADED STATION RECIPES =====
+  advanced_forge: { station: 'forge', cost: { iron_bar: 20, stone: 15, mana_crystal: 2 }, output: { type: 'advanced_forge', name: 'Advanced Forge' }, placeable: true, skillReq: { crafting: 15 } },
+  master_forge: { station: 'advanced_forge', cost: { steel_bar: 25, mithril_bar: 5, mana_crystal: 5 }, output: { type: 'master_forge', name: 'Master Forge' }, placeable: true, skillReq: { crafting: 30 } },
+  advanced_alchemy_table: { station: 'alchemy_table', cost: { iron_bar: 10, mana_crystal: 5, glass_vial: 10 }, output: { type: 'advanced_alchemy_table', name: 'Advanced Alchemy Table' }, placeable: true, skillReq: { alchemy: 15, crafting: 10 } },
+  master_alchemy_table: { station: 'advanced_alchemy_table', cost: { mithril_bar: 5, mana_crystal: 10, glass_lens: 5 }, output: { type: 'master_alchemy_table', name: 'Master Alchemy Table' }, placeable: true, skillReq: { alchemy: 25, crafting: 20 } },
+  advanced_loom: { station: 'loom', cost: { wood: 15, iron_bar: 10, silk: 5 }, output: { type: 'advanced_loom', name: 'Advanced Loom' }, placeable: true, skillReq: { sewing: 15, crafting: 10 } },
+  master_loom: { station: 'advanced_loom', cost: { mithril_bar: 5, silk_cloth: 10, mana_crystal: 3 }, output: { type: 'master_loom', name: 'Master Loom' }, placeable: true, skillReq: { sewing: 25, crafting: 20 } },
+  advanced_brewery: { station: 'brewery', cost: { wood: 15, iron_bar: 10, cogs: 5 }, output: { type: 'advanced_brewery', name: 'Advanced Brewery' }, placeable: true, skillReq: { brewing: 15, crafting: 10 } },
+  master_brewery: { station: 'advanced_brewery', cost: { mithril_bar: 3, mana_crystal: 5, clockwork_core: 1 }, output: { type: 'master_brewery', name: 'Master Brewery' }, placeable: true, skillReq: { brewing: 25, crafting: 20 } },
+  advanced_enchanting_table: { station: 'enchanting_table', cost: { mana_crystal: 10, arcane_essence: 5, mithril_bar: 3 }, output: { type: 'advanced_enchanting_table', name: 'Advanced Enchanting Table' }, placeable: true, skillReq: { enchanting: 15, crafting: 10 } },
+
+  // ===== PROCEDURAL FOOD RECIPES (produce quality items) =====
+  herb_tea: { station: 'cauldron', cost: { herbs: 2, wheat: 1 }, output: { type: 'herb_tea', name: 'Herb Tea' }, procedural: true, skillReq: { cooking: 3 } },
+  grilled_meat: { station: 'cauldron', cost: { raw_meat: 1, herbs: 1 }, output: { type: 'grilled_meat', name: 'Grilled Meat' }, procedural: true, skillReq: { cooking: 5 } },
+  berry_jam: { station: 'cauldron', cost: { berries: 4, wheat: 1 }, output: { type: 'berry_jam', name: 'Berry Jam' }, procedural: true, skillReq: { cooking: 4 } },
+  cheese_wheel: { station: 'cauldron', cost: { milk: 3, herbs: 1 }, output: { type: 'cheese_wheel', name: 'Cheese Wheel' }, procedural: true, skillReq: { cooking: 6 } },
+  corn_bread: { station: 'cauldron', cost: { corn: 2, wheat: 1, egg: 1 }, output: { type: 'corn_bread', name: 'Corn Bread' }, procedural: true, skillReq: { cooking: 8 } },
+  honey_cake: { station: 'cauldron', cost: { honey: 2, wheat: 2, egg: 1 }, output: { type: 'honey_cake', name: 'Honey Cake' }, procedural: true, skillReq: { cooking: 10 } },
+  pumpkin_pie: { station: 'cauldron', cost: { pumpkin: 1, wheat: 2, egg: 1, milk: 1 }, output: { type: 'pumpkin_pie', name: 'Pumpkin Pie' }, procedural: true, skillReq: { cooking: 12 } },
+  ancient_fruit_wine: { station: 'brewery', cost: { ancient_fruit: 3 }, output: { type: 'ancient_fruit_wine', name: 'Ancient Fruit Wine' }, procedural: true, skillReq: { brewing: 20 } },
+
+  // ===== ANIMAL FEED =====
+  animal_feed: { station: 'none', cost: { wheat: 3, vegetables: 1 }, output: { type: 'animal_feed', name: 'Animal Feed' }, resource: 'animal_feed' },
+
+  // ===== DAIRY RECIPES =====
+  cheese: { station: 'cauldron', cost: { milk: 2, herbs: 1 }, output: { type: 'cheese', name: 'Cheese' }, resource: 'cheese', skillReq: { cooking: 4 } },
+  butter: { station: 'cauldron', cost: { milk: 3 }, output: { type: 'butter', name: 'Butter' }, resource: 'butter', skillReq: { cooking: 2 } },
+
+  // ===== PROCESSING BUILDINGS (placeable) =====
+  brewery_station: {
+    station: 'none',
+    cost: { wood: 30, iron_bar: 10, glass_vial: 5 },
+    output: { type: 'brewery', name: 'Brewery' },
+    placeable: true,
+    skillReq: { crafting: 8 },
+  },
+  preserving_station: {
+    station: 'none',
+    cost: { wood: 20, iron_bar: 8, glass_vial: 3 },
+    output: { type: 'preserving_station', name: 'Preserving Station' },
+    placeable: true,
+    skillReq: { crafting: 6 },
+  },
+  jam_maker: {
+    station: 'none',
+    cost: { wood: 15, iron_bar: 5, glass_vial: 4 },
+    output: { type: 'jam_maker', name: 'Jam Maker' },
+    placeable: true,
+    skillReq: { crafting: 4 },
+  },
+
+  // ===== PROCESSING RECIPES (require station proximity) =====
+  ale: {
+    station: 'brewery',
+    cost: { wheat: 5 },
+    output: { type: 'ale', name: 'Ale', quantity: 2 },
+    resource: 'ale',
+    skillReq: { cooking: 5 },
+    processingTime: 30000,
+  },
+  wine: {
+    station: 'brewery',
+    cost: { vegetables: 8 },
+    output: { type: 'wine', name: 'Wine', quantity: 2 },
+    resource: 'wine',
+    skillReq: { cooking: 8 },
+    processingTime: 60000,
+  },
+  pickled_vegetables: {
+    station: 'preserving_station',
+    cost: { vegetables: 10, glass_vial: 1 },
+    output: { type: 'pickled_vegetables', name: 'Pickled Vegetables', quantity: 3 },
+    resource: 'pickled_vegetables',
+    skillReq: { cooking: 3 },
+    processingTime: 20000,
+  },
+  herb_preserves: {
+    station: 'preserving_station',
+    cost: { herbs: 8, glass_vial: 1 },
+    output: { type: 'herb_preserves', name: 'Herb Preserves', quantity: 2 },
+    resource: 'herb_preserves',
+    skillReq: { cooking: 6 },
+    processingTime: 30000,
+  },
+  berry_jam: {
+    station: 'jam_maker',
+    cost: { vegetables: 6 },
+    output: { type: 'berry_jam', name: 'Berry Jam', quantity: 3 },
+    resource: 'berry_jam',
+    skillReq: { cooking: 2 },
+    processingTime: 15000,
+  },
+  fruit_jam: {
+    station: 'jam_maker',
+    cost: { herbs: 5, wheat: 2 },
+    output: { type: 'fruit_jam', name: 'Fruit Jam', quantity: 2 },
+    resource: 'fruit_jam',
+    skillReq: { cooking: 4 },
+    processingTime: 20000,
+  },
+
+  // ===== ENCUMBRANCE ITEMS =====
+  cart: {
+    station: 'none',
+    cost: { wood: 30, iron_bar: 5 },
+    output: { type: 'cart', name: 'Cart' },
+    skillReq: { crafting: 5 },
+  },
+  pack_mule_tack: {
+    station: 'none',
+    cost: { wood: 10, iron_bar: 3 },
+    output: { type: 'pack_mule_tack', name: 'Pack Mule Tack' },
+    skillReq: { crafting: 3 },
+  },
 };
 
 // Merge RPG recipes from rpg-data.js
@@ -1312,6 +1473,61 @@ module.exports = {
           }
         }
 
+        // --- Quality Minigame Check (for advanced recipes) ---
+        var maxSkillReqVal = 0;
+        if (recipe.skillReq) {
+          var _reqKeys = Object.keys(recipe.skillReq);
+          for (var _ri = 0; _ri < _reqKeys.length; _ri++) {
+            if (recipe.skillReq[_reqKeys[_ri]] > maxSkillReqVal) maxSkillReqVal = recipe.skillReq[_reqKeys[_ri]];
+          }
+        }
+        if (maxSkillReqVal >= QUALITY_CRAFT_SKILL_THRESHOLD && !data.skipMinigame) {
+          // Check resources first before starting minigame
+          var _preInv = accounts.getMMOInventory(key);
+          if (_preInv) {
+            var _canAfford = true;
+            var _costKeys = Object.keys(recipe.cost);
+            for (var _ci = 0; _ci < _costKeys.length; _ci++) {
+              if ((_preInv[_costKeys[_ci]] || 0) < recipe.cost[_costKeys[_ci]]) { _canAfford = false; break; }
+            }
+            if (_canAfford) {
+              // Deduct resources before minigame (consumed regardless of quality)
+              for (var _di = 0; _di < _costKeys.length; _di++) {
+                accounts.removeResource(key, _costKeys[_di], recipe.cost[_costKeys[_di]]);
+              }
+              // Generate timing window
+              var _duration = recipe.station === 'none' ? 5000 : 8000;
+              var _baseWindow = 800;
+              var _craftAccount = accounts.loadAccount(key);
+              var _ingenuity = (_craftAccount && _craftAccount.rpgStats && _craftAccount.rpgStats.ingenuity) || 5;
+              var _ingBonus = _ingenuity * 20;
+              var _raceBonus = (_craftAccount && _craftAccount.race === 'Gnome') ? 0.30 : 0;
+              var _ascBonus = ((_craftAccount && _craftAccount.ascensionTree && _craftAccount.ascensionTree['artisan_legacy']) || 0) * 0.10;
+              var _windowMs = Math.floor(_baseWindow + _ingBonus + (_baseWindow * (_raceBonus + _ascBonus)));
+              var _targetPos = Math.floor(Math.random() * 600) + 200;
+              var _windowHalf = Math.floor(_windowMs / 2);
+              var _windowStart = Math.max(0, _targetPos - _windowHalf);
+              var _windowEnd = Math.min(1000, _targetPos + _windowHalf);
+              var _expiresAt = Date.now() + _duration;
+              pendingMinigames.set(socket.id, {
+                recipeId: recipeId,
+                windowStart: _windowStart,
+                windowEnd: _windowEnd,
+                expiresAt: _expiresAt,
+                account_key: key,
+              });
+              socket.emit('craft_minigame', {
+                recipeId: recipeId,
+                duration: _duration,
+                windowStart: _windowStart,
+                windowEnd: _windowEnd,
+                expiresAt: _expiresAt,
+              });
+              return; // Don't complete craft yet -- wait for minigame result
+            }
+          }
+        }
+
         // --- Acquire per-account craft lock to prevent double-spend ---
         if (craftLocks.has(key)) {
           socket.emit('craft_error', { message: 'Crafting in progress' });
@@ -1404,10 +1620,40 @@ module.exports = {
 
           // --- Produce output ---
 
+          // Procedural food: generates quality items with affixes
+          if (recipe.procedural) {
+            var cookingSkillLevel = 1;
+            if (craftAccount && craftAccount.skills && craftAccount.skills.cooking) {
+              cookingSkillLevel = craftAccount.skills.cooking.level || 1;
+            }
+            if (craftAccount && craftAccount.skills && craftAccount.skills.brewing && recipe.station === 'brewery') {
+              cookingSkillLevel = Math.max(cookingSkillLevel, craftAccount.skills.brewing.level || 1);
+            }
+            // Station tier bonus
+            var stationTierBonus = 0;
+            if (nearStation && rpgData.STATION_UPGRADE_TIERS[nearStation.type]) {
+              stationTierBonus = rpgData.STATION_UPGRADE_TIERS[nearStation.type].qualityBonus || 0;
+            }
+            var _craftLuck = accounts.getPlayerLuck(key);
+            var foodItem = lootGen.generateConsumable(recipe.output.type, recipe.output.name, {
+              craftSkillLevel: cookingSkillLevel + Math.floor(stationTierBonus * 10),
+              source: 'craft',
+              luckBonus: _craftLuck,
+            });
+            if (foodItem) {
+              foodItem.isFoodItem = true;
+              if (craftAccount && craftAccount.username) foodItem.craftedBy = craftAccount.username;
+              accounts.addMMOItem(key, foodItem);
+            } else {
+              // Fallback: add as plain resource
+              accounts.addResource(key, recipe.output.type, 1);
+            }
+          }
+
           // If the recipe outputs a resource (e.g. iron_bar smelting), add it
           // to the resource pool rather than as an item.
           var resourceOutputAmount = 1;
-          if (recipe.resource) {
+          if (!recipe.procedural && recipe.resource) {
             // Check if this is a consumable type that should get procedural generation
             var consumableCategory = lootGen.getConsumableCategory(recipe.resource);
             var isAdvancedConsumable = consumableCategory && (
@@ -1433,9 +1679,11 @@ module.exports = {
                   skillLevel = craftAccount.skills.brewing.level || 1;
                 }
               }
+              var _advCraftLuck = accounts.getPlayerLuck(key);
               var consumableItem = lootGen.generateConsumable(recipe.resource, recipe.output.name, {
                 craftSkillLevel: skillLevel,
                 source: 'craft',
+                luckBonus: _advCraftLuck,
               });
               if (consumableItem) {
                 // Apply card-based bonuses
@@ -1456,6 +1704,7 @@ module.exports = {
                   var bonusConsumable = lootGen.generateConsumable(recipe.resource, recipe.output.name, {
                     craftSkillLevel: skillLevel,
                     source: 'craft',
+                    luckBonus: _advCraftLuck,
                   });
                   if (bonusConsumable) {
                     if (craftAccount && craftAccount.username) bonusConsumable.craftedBy = craftAccount.username;
@@ -1493,10 +1742,21 @@ module.exports = {
             if (isEquipment) {
               // --- PROCEDURAL EQUIPMENT GENERATION via loot-generator ---
               var baseDef = accounts.WEAPON_TYPES[recipe.output.type];
+              var _eqSkillLevel = 1;
+              if (craftAccount && craftAccount.skills) {
+                var _eqSkillCandidates = ['crafting', 'leatherworking', 'sewing', 'blacksmithing', 'cogworking'];
+                for (var _eqSi = 0; _eqSi < _eqSkillCandidates.length; _eqSi++) {
+                  var _eqSk = craftAccount.skills[_eqSkillCandidates[_eqSi]];
+                  if (_eqSk && (_eqSk.level || 0) > _eqSkillLevel) _eqSkillLevel = _eqSk.level;
+                }
+              }
+              var _eqLuck = accounts.getPlayerLuck(key);
               var genItem = lootGen.generateItem(recipe.output.type, baseDef, {
                 source: 'craft',
                 depth: 1,
                 forcedRarity: baseDef.rarity || 'common',
+                craftSkillLevel: _eqSkillLevel,
+                luckBonus: _eqLuck,
               });
 
               // Apply card-based crafting bonuses on top of procedural stats
@@ -1572,7 +1832,7 @@ module.exports = {
               var bonusItem;
               if (isEquipment) {
                 // Generate a second procedural item
-                bonusItem = lootGen.generateItem(recipe.output.type, accounts.WEAPON_TYPES[recipe.output.type], { source: 'craft' });
+                bonusItem = lootGen.generateItem(recipe.output.type, accounts.WEAPON_TYPES[recipe.output.type], { source: 'craft', craftSkillLevel: _eqSkillLevel, luckBonus: _eqLuck });
                 if (newItem.maxDurability) { bonusItem.maxDurability = newItem.maxDurability; bonusItem.durability = newItem.maxDurability; }
               } else {
                 bonusItem = { id: generateItemId(), type: newItem.type, name: newItem.name, data: {} };
@@ -1615,6 +1875,9 @@ module.exports = {
             accounts.addSkillXp(key, 'gourmand', gourmandCraftXp);
           }
 
+          // Card Evolution XP: crafting category on successful craft
+          accounts.gainArchetypeCategoryXp(key, 'crafting', 5);
+
           // --- Send success response with updated inventory ---
           var updatedInv = accounts.getMMOInventory(key);
 
@@ -1625,6 +1888,14 @@ module.exports = {
             skillXp: { skill: craftSkillName, xp: craftXpAmount },
           });
 
+          // Fire glossary trigger for first craft
+          try {
+            var craftTerms = knowledgeHandler.fireGlossaryTrigger(accounts, key, 'first_craft');
+            for (var cti = 0; cti < craftTerms.length; cti++) {
+              socket.emit('knowledge_term_unlocked', craftTerms[cti]);
+            }
+          } catch (e) { /* glossary trigger non-fatal */ }
+
           // --- Track daily challenge & achievement progress for crafting ---
           challengesHandler.trackChallengeProgress(accounts, key, 'craft', 1);
           challengesHandler.trackAchievementProgress(accounts, key, 'craft', 1, socket);
@@ -1632,6 +1903,25 @@ module.exports = {
           if (skillReqs.cooking && skillReqs.cooking > 0) {
             challengesHandler.trackChallengeProgress(accounts, key, 'cook', 1);
           }
+
+          // --- Quest progress: craft-type quests ---
+          try {
+            var qAcc = accounts.loadAccount(key);
+            if (qAcc && qAcc.questProgress && qAcc.questProgress.active) {
+              var rpgData = require('../rpg-data');
+              var qChanged = false;
+              for (var qi = 0; qi < qAcc.questProgress.active.length; qi++) {
+                var quest = qAcc.questProgress.active[qi];
+                var tmpl = rpgData.WORLD_QUEST_TEMPLATES ? rpgData.WORLD_QUEST_TEMPLATES.find(function(t) { return t.questId === quest.questId; }) : null;
+                if (tmpl && tmpl.type === 'craft' && tmpl.target.item === recipe.output.type) {
+                  quest.progress = Math.min(quest.progress + 1, quest.targetCount);
+                  qChanged = true;
+                  socket.emit('quest_progress', { questId: quest.questId, progress: quest.progress, targetCount: quest.targetCount, complete: quest.progress >= quest.targetCount });
+                }
+              }
+              if (qChanged) accounts.saveAccount(qAcc);
+            }
+          } catch (qErr) { /* quest progress error is non-fatal */ }
         } finally {
           craftLocks.delete(key);
         }
@@ -1963,6 +2253,132 @@ module.exports = {
     });
 
     // ------------------------------------------------------------------
+    // consume_food_item: consume a procedural food item (by itemId)
+    // ------------------------------------------------------------------
+    socket.on('consume_food_item', function(data) {
+      try {
+        if (!data || typeof data.itemId !== 'string') {
+          socket.emit('food_error', { message: 'Invalid request' });
+          return;
+        }
+
+        var key = socketAccountMap.get(socket.id);
+        if (!key) {
+          socket.emit('food_error', { message: 'No account found' });
+          return;
+        }
+
+        // Find the item in mmoInventory.items[]
+        var mmoInv = accounts.getMMOInventory(key);
+        if (!mmoInv || !mmoInv.items || !Array.isArray(mmoInv.items)) {
+          socket.emit('food_error', { message: 'No inventory found' });
+          return;
+        }
+        var itemIdx = -1;
+        var foodItem = null;
+        for (var fi = 0; fi < mmoInv.items.length; fi++) {
+          if (mmoInv.items[fi] && mmoInv.items[fi].id === data.itemId) {
+            itemIdx = fi;
+            foodItem = mmoInv.items[fi];
+            break;
+          }
+        }
+        if (!foodItem || !foodItem.isConsumable) {
+          socket.emit('food_error', { message: 'Item not found or not consumable' });
+          return;
+        }
+
+        // Look up base food effect
+        var baseFoodType = foodItem.type;
+        var foodEffect = rpgData.FOOD_EFFECTS[baseFoodType];
+        if (!foodEffect) {
+          socket.emit('food_error', { message: 'No food effect for this item' });
+          return;
+        }
+
+        // Quality multiplier
+        var qualityMult = foodItem.qualityMult || 1.0;
+
+        // Calculate HP restored
+        var hpRestored = Math.round(foodEffect.hpRestore * qualityMult);
+
+        // Apply prefix effects
+        var prefixEffects = foodItem.prefixEffects || {};
+        if (prefixEffects.hpRestoreMult) {
+          hpRestored = Math.round(hpRestored * prefixEffects.hpRestoreMult);
+        }
+
+        // Build buff
+        var buff = null;
+        if (foodEffect.buff) {
+          buff = {
+            stat: foodEffect.buff.stat,
+            value: Math.round(foodEffect.buff.value * qualityMult),
+            duration: Math.round(foodEffect.buff.duration * qualityMult),
+          };
+          if (prefixEffects.buffDurationMult) {
+            buff.duration = Math.round(buff.duration * prefixEffects.buffDurationMult);
+          }
+          if (prefixEffects.statBuff) {
+            buff.value += prefixEffects.statBuff;
+          }
+        }
+
+        // Extra buffs from prefix
+        var extraBuffs = [];
+        if (prefixEffects.hpRegen && prefixEffects.regenDuration) {
+          extraBuffs.push({ type: 'hpRegen', value: prefixEffects.hpRegen, duration: prefixEffects.regenDuration });
+        }
+        if (prefixEffects.defBuff && prefixEffects.buffDuration) {
+          extraBuffs.push({ type: 'defBuff', value: prefixEffects.defBuff, duration: prefixEffects.buffDuration });
+        }
+        if (prefixEffects.speedBuff && prefixEffects.buffDuration) {
+          extraBuffs.push({ type: 'speedBuff', value: prefixEffects.speedBuff, duration: prefixEffects.buffDuration });
+        }
+
+        // Suffix effects
+        var suffixEffects = foodItem.suffixEffects || {};
+
+        // Remove item from inventory
+        mmoInv.items.splice(itemIdx, 1);
+        accounts.saveAccount(key, accounts.loadAccount(key));
+
+        // Dungeon healing
+        var dungeonCombat = null;
+        try { dungeonCombat = require('../dungeon-combat'); } catch (e) { /* not available */ }
+        var dungeonHealed = false;
+        if (dungeonCombat && dungeonCombat.getCombatBySocketId) {
+          var combat = dungeonCombat.getCombatBySocketId(socket.id);
+          if (combat && typeof combat.hp === 'number' && typeof combat.maxHp === 'number') {
+            combat.hp = Math.min(combat.maxHp, combat.hp + hpRestored);
+            dungeonHealed = true;
+          }
+        }
+
+        // Phantom skill XP
+        var foodXpRate2 = (deps.serverRules && deps.serverRules.xpRate) ? deps.serverRules.xpRate : undefined;
+        accounts.addSkillXp(key, 'gourmand', 15 + Math.floor(Math.random() * 16), foodXpRate2);
+        accounts.addSkillXp(key, 'survival', 3, foodXpRate2);
+
+        socket.emit('food_consumed', {
+          itemId: data.itemId,
+          resourceType: baseFoodType,
+          hpRestored: hpRestored,
+          buff: buff,
+          extraBuffs: extraBuffs,
+          suffixEffects: suffixEffects,
+          quality: foodItem.quality,
+          qualityMult: qualityMult,
+          dungeonHealed: dungeonHealed,
+          inventory: accounts.getMMOInventory(key),
+        });
+      } catch (err) {
+        console.error('[consume_food_item] Error:', err.message);
+        socket.emit('food_error', { message: 'Internal server error' });
+      }
+    });
+
+    // ------------------------------------------------------------------
     // gem_socket_item: socket a gem into an equipment item
     // ------------------------------------------------------------------
     socket.on('gem_socket_item', function(data) {
@@ -2247,6 +2663,61 @@ module.exports = {
         });
       } catch (err) {
         console.error('[inscribe_scroll] Error:', err.message);
+        socket.emit('craft_error', { message: 'Internal server error' });
+      }
+    });
+
+    // ------------------------------------------------------------------
+    // craft_minigame_result: complete a quality crafting minigame
+    // ------------------------------------------------------------------
+    socket.on('craft_minigame_result', function(data) {
+      try {
+        var pending = pendingMinigames.get(socket.id);
+        if (!pending) {
+          socket.emit('craft_error', { message: 'No active minigame.' });
+          return;
+        }
+        pendingMinigames.delete(socket.id);
+        if (Date.now() > pending.expiresAt) {
+          socket.emit('craft_error', { message: 'Minigame expired.' });
+          return;
+        }
+        var pos = typeof data.clickPos === 'number' ? data.clickPos : 500;
+        var quality;
+        if (pos >= pending.windowStart && pos <= pending.windowEnd) {
+          // Hit the window -- determine quality by how centered
+          var center = (pending.windowStart + pending.windowEnd) / 2;
+          var dist = Math.abs(pos - center);
+          var halfWindow = (pending.windowEnd - pending.windowStart) / 2;
+          if (halfWindow > 0 && dist < halfWindow * 0.2) quality = 'masterwork';
+          else if (halfWindow > 0 && dist < halfWindow * 0.5) quality = 'excellent';
+          else quality = 'good';
+        } else {
+          quality = 'poor';
+        }
+        // Complete craft with quality
+        var recipe = RECIPES[pending.recipeId];
+        if (!recipe) return;
+        var qualityTier = QUALITY_TIERS[quality] || QUALITY_TIERS.normal;
+        var output = {
+          type: recipe.output.type,
+          name: qualityTier.name + ' ' + recipe.output.name,
+          quality: quality,
+          qualityMultiplier: qualityTier.multiplier,
+        };
+        if (recipe.output.quantity) output.quantity = recipe.output.quantity;
+        // Add to inventory
+        var key = pending.account_key;
+        var account = accounts.loadAccount(key);
+        if (!account) return;
+        var inv = account.mmoInventory || {};
+        if (!inv.items) inv.items = [];
+        inv.items.push(output);
+        account.mmoInventory = inv;
+        accounts.saveAccount(account);
+        socket.emit('craft_complete', { item: output, quality: quality });
+      } catch (err) {
+        console.error('[craft_minigame_result] Error:', err.message);
         socket.emit('craft_error', { message: 'Internal server error' });
       }
     });

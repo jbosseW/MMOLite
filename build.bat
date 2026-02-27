@@ -77,13 +77,7 @@ if errorlevel 1 (
     echo ERROR: esbuild failed to bundle server.js
     exit /b 1
 )
-:: Bundle game-worker.js separately (used by worker_threads)
-call npx esbuild game-worker.js --bundle --platform=node --target=node18 --minify --outfile="build\MMOLite\game-worker.js" 2>nul
-if errorlevel 1 (
-    echo WARNING: esbuild failed to bundle game-worker.js, copying raw file.
-    copy "game-worker.js" "build\MMOLite\" >nul
-)
-echo        All server code bundled into 2 minified files.
+echo        Server code bundled into single minified file.
 
 :: ── Step 6: Skip npm install (all dependencies bundled by esbuild) ──
 echo [6/8] Dependencies bundled — no npm install needed.

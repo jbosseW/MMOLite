@@ -1,0 +1,92 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║               F  O  R  T  U  N  A   —   World Map                  ║
+╠══════════════════════════════════════════════════════════════════════╣
+║≡≡≡≡≡≡≡          ≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡           ...........║
+║≡ NORTHERN ≡ ~~~ ≡≡≡≡≡≡≡≡  FROSTBOUND REACH  ≡≡≡≡         ...........║
+║≡  TUNDRA  ≡ ~~~ ≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡         ...........║
+║≡≡≡≡≡≡≡≡≡≡≡  ~~  ≡≡≡≡≡≡≡≡≡≡ Winter Citadel† ≡≡≡≡         ...........║
+║≡≡≡≡≡≡≡≡≡≡≡  ~~  ≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡     GREAT ENDLESS  ║
+║  ~~~~~~~~~~ ~~~  ≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡      DESERT        ║
+║  ~~~~~~~~~~  ~~  ≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡      ...........   ║
+║  ~~~~~~~~~~       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   Sand Tomb†  ║
+║  ~~~~~~~~~~        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  Mirage Pal†.║
+║  ~~~~~~~~~~~        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ......[FRT].║
+║  ~~~~~~~~~~~~   T T  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   ...........T║
+║ %  ~~~~~~~~~~~  T T  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  T ║
+║ %%  ~~~~~~~~~~  T T  ^^^^^^^ DWARVEN MOUNTAINS  ^^^^^^^^^^^^^^^^^^T ║
+║ %%%  ~~~~~~~~~   T   ^^^^^^^^^^^^^^[IHD]^^^^Troll Warren†^^^^^^^^^T ║
+║ %%%%  ~~~~~~~~       ^^^^^^^^^^^^^^^^^^^^^^^Crystal Depths†^^^^^^^T ║
+║ %%%%%  ~~~~~~~  T    ^^^^^^^^^^^^^^^^Deep Forge†^^Dragon's Maw†^^^T ║
+║ %%%%%% ~~~  T T T    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ T║
+║ Infernal~~~  T T     s s s s s s s s s s,,,,,,,,,,,,,,,,,,,, T T  T ║
+║  Pit†  ~~~   T T     s s s s s s s s s,,,,,,,,,,,,,,,,,,,,,T T T  ~ ║
+║ Ashen  ~~~   T T     s s Barrow of s s,,,,,,,,,,,,,,,,,,,,T T T  ~~ ║
+║ Obs†    ~~~   T      s s Warlords† s s,,,,,,,,,,,,,,,,,,,T T T  ~~~ ║
+║ %%%%%    ~~~  T      s [KRG] s s Sanctum of Veranthos†,,,,,T T  ~~~ ║
+║ %%%%%     ~~         s s s s s s,,,,,,,,,,,,,,,,,,,,[SLR]{R},,T  ~~~ ║
+║ %%%%%     ~~         s s s s,,,,,,,,,,,,,,,,,,,,,,,Castle Nocturn†~~ ║
+║ %%%%%      ~  T T    s s s,,,,,,,,,,,,,,,_,_,_,_,_,_,_,[HDM],_T  ~~ ║
+║ %%%%%      ~  T T   [BNT] s,,,,,,,,,,,_,_,Sunken,_,_,_,_,_,_,T  ~~ ║
+║ %%%%%         T T    s s,,,,,,,,,,,,_,_,Chapel†,Varek Manor†,,T  ~~~ ║
+║ %%%%%  Skrix's  T    s,,,,,,,,,,,_,_,_,_,_,_,_,Celestial,_,_,T  ~~~ ║
+║ %%%%%  Stronghld†     ,,,,,,,,_,_,_,_,_,_,_,_,_,Sanctum†,_,_,T  ~~ ║
+║ %%%%%      T T T T  ,,,,,,,_,_,_,_,_,_,_,_,_,_,_,_,_,,, T T T  ~~ ║
+║ %%%%%   T T T T T  ,,,,,,,_,_,_,_,_,_,_,_,_,_,,,,,T T T T T T  ~~ ║
+║ %%%%%   T T T T   ,,,,,,,_,_,_,_,_,_,_,,,,,,,,T T T T T T T T  ~~~ ║
+║ %%%%%   T T T   ,,,,,,,_,_,_,_,_,,,,,,,,T T T T T T T T T T T  ~~~ ║
+║ %%%%%   T T  Shadow=,_,_,_,_,,,,,T T T * * * * * * * * * T T T ~~~ ║
+║ %%%%%  ==Labyrinth†  ==Shadowfen==,,,T * * * * * * * * * * T T  ~~~ ║
+║ %%%%%  ==Plague======  ===Shadowfen====T * * * * * * * * * T T  ~~~ ║
+║ %%%%%  ==Burrow†=====  ===Ruins of====  * * * ELVEN SOUTH* * T  ~~~ ║
+║ %%%%%  ==Broodm.Nest†= ===Drowned†====  * * * * * * * * * * T  ~~~ ║
+║ %%%%%  =====[MKR]===========Fungal===   * * * * * [SYL] * * T  ~~~~ ║
+║ %%%%%  ====================Grotto†===   * * * * * * * * * *    ~~~~~ ║
+║ %%%%%  =====================Shadowfen=  * * * Eternal Reliquary†~~~~ ║
+║ %%%%%  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ~~ ║
+║ ~~~~~ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ~ ║
+║ W W W W W W W W  WASTES OF CALIDAR  W W W W W W W Astral Tear† W W  ║
+║ W W W W W W W W W W W W W W W W W W W W W W Void Sanctum† W W W W  ║
+║ W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W  ║
+║ ~~~~ Ashen ~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~ ║
+║ ~~ Archipelago ~  ~~~~~~~~~~~~~~ SOUTHERN OCEAN  ~~~~~~~~~~~~~~~~~~~ ║
+║ ~~  % ≡ % ~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ~~ ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  GNOMISH ISLES (far east, across the Shimmering Sea ~ ~ ~ ~ ~ ~ ):  ║
+║  ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ [MCH] ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~   ║
+║  ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ [CLK] ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~   ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  BIOME LEGEND                                                        ║
+║  ≡  Frostbound / Ice      .  Great Endless Desert                   ║
+║  %  Scorched Sands        ^  Dwarven Mountains                      ║
+║  s  Orcish Steppes        ,  Plains / Grassland                     ║
+║  _  Holy Dominion         T  Forest / Wildlands                     ║
+║  =  Swamp / Shadowfen     *  Elven South                            ║
+║  W  Wastes of Calidar     ~  Water / Ocean                          ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  TOWNS                           KEY DUNGEONS                       ║
+║  [FRT]  Fortune's Rest (NE)      Winter Citadel†  Frostbound Reach  ║
+║  [IHD]  Ironhold (Mountains)     Sand Tomb†       Desert            ║
+║  [KRG]  Kragmor (Steppes)        Mirage Palace†   Desert            ║
+║  [BNT]  BoneTrap (West Plains)   Troll Warren†    Mountains         ║
+║  [SLR]  Solara — {R} The Rift    Crystal Depths†  Mountains         ║
+║  [HDM]  Holy Dominion (Center)   Deep Forge†      Mountains         ║
+║  [MKR]  Murkmire (SW Swamp)      Dragon's Maw†    Mountains         ║
+║  [SYL]  Sylvaris (South, Elven)  Barrow of Warlords†  Steppes       ║
+║  [MCH]  Mechspire (Gnomish Isle) Sanctum Veranthos†  Steppes (Raid) ║
+║  [CLK]  Clockwork Harbor (Isle)  Skrix's Stronghold†  West Edge     ║
+║                                  Castle Nocturn†   Plains/Holy Dom. ║
+║                                  Sunken Chapel†    Holy Dominion    ║
+║                                  Varek Manor†      Holy Dominion    ║
+║                                  Celestial Sanctum† Holy Dom. East  ║
+║                                  Shadow Labyrinth†  Swamp           ║
+║                                  Plague Burrow†     Swamp           ║
+║                                  Ruins of the Drowned†  Swamp       ║
+║                                  Broodmother's Nest†    Swamp       ║
+║                                  Fungal Grotto†     Swamp/South     ║
+║                                  Eternal Reliquary† Elven South     ║
+║                                  Primeval Cavern†   Elven South     ║
+║                                  Infernal Pit†      Scorched Sands  ║
+║                                  Ashen Observatory† Scorched Sands  ║
+║                                  Astral Tear†       Wastes          ║
+║                                  Void Sanctum†      Wastes (deep)   ║
+╚══════════════════════════════════════════════════════════════════════╝

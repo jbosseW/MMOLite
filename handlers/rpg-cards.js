@@ -6,6 +6,7 @@
 var rpgData = require('../rpg-data');
 var crypto = require('crypto');
 var challengesHandler = require('./challenges');
+var knowledgeHandler = require('./knowledge');
 
 var _cardVendorLocks = new Set();
 
@@ -70,7 +71,7 @@ function _buildRateDisclosure(acc, accounts, key) {
 
 module.exports = {
   init(io, socket, deps) {
-    var { user, socketAccountMap, accounts, checkEventRate } = deps;
+    var { user, socketAccountMap, accounts, checkEventRate, applyRateGrace } = deps;
 
     // --- get_gacha_rates: disclose exact drop rates for this player ---
     socket.on('get_gacha_rates', function() {
@@ -89,6 +90,7 @@ module.exports = {
 
     // --- card_open_pack: open a pending card pack ---
     socket.on('card_open_pack', function() {
+      if (!applyRateGrace(socket, 'card_open_pack', 6, 2000)) return;
 
       var key = socketAccountMap.get(socket.id);
       if (!key) return;
@@ -103,12 +105,36 @@ module.exports = {
         return;
       }
 
+      // Apply rare curse chance per card (1.5% base, luck-scaled down)
+      // Pack source 'rift' would use higher chance — future feature for rift packs
+      var packLuck = accounts.getPlayerLuck(key);
+      var packCursed = [];
+      if (result.cards && result.cards.length > 0) {
+        for (var pki = 0; pki < result.cards.length; pki++) {
+          var pkCard = result.cards[pki];
+          var pkCurse = rpgData.rollCardCurse(0.015, packLuck);
+          if (pkCurse) {
+            rpgData.applyCurse(pkCard, pkCurse);
+            packCursed.push({ instanceId: pkCard.instanceId, curse: pkCurse });
+          }
+        }
+      }
+
       socket.emit('card_pack_opened', {
         cards: result.cards,
         pendingPacks: result.pendingPacks,
         rates_included: true,
         rateDisclosure: preOpenRates,
+        cursed: packCursed.length > 0 ? packCursed : undefined,
       });
+
+      // Fire glossary trigger for card pack opening
+      try {
+        var terms = knowledgeHandler.fireGlossaryTrigger(accounts, key, 'card_open_pack');
+        for (var i = 0; i < terms.length; i++) {
+          socket.emit('knowledge_term_unlocked', terms[i]);
+        }
+      } catch (e) { /* glossary trigger non-fatal */ }
 
       // --- Track daily challenge & achievement progress for pack opening ---
       challengesHandler.trackChallengeProgress(accounts, key, 'pack_open', 1);
@@ -130,6 +156,7 @@ module.exports = {
         socket.emit('card_error', { message: 'Invalid request' });
         return;
       }
+      if (!applyRateGrace(socket, 'card_fuse', 10, 3000)) return;
 
       var key = socketAccountMap.get(socket.id);
       if (!key) return;
@@ -510,6 +537,92 @@ module.exports = {
       var acc = accounts.loadAccount(key);
       if (!acc) return;
       socket.emit('card_loadouts', { loadouts: acc.cardLoadouts || [null, null, null, null, null] });
+    });
+
+    // --- card_choose_evolution_path: player picks A or B at evolution stage 3 ---
+    socket.on('card_choose_evolution_path', function(data) {
+      if (!data || !data.instanceId || !data.path) {
+        socket.emit('card_error', { message: 'Missing instanceId or path' });
+        return;
+      }
+      var key = socketAccountMap.get(socket.id);
+      if (!key) return;
+
+      var result = accounts.applyEvolutionPath(key, data.instanceId, data.path);
+      if (result.error) {
+        socket.emit('card_error', { message: result.error });
+        return;
+      }
+
+      socket.emit('card_evolution_complete', { card: result.card, path: data.path });
+    });
+
+    // --- get_card_evolution_info: return evolution thresholds + path options for a cardId ---
+    socket.on('get_card_evolution_info', function(data) {
+      if (!data || !data.cardId) return;
+      var template = rpgData.CARD_BY_ID[data.cardId];
+      if (!template || !template.evolutionThresholds) {
+        socket.emit('card_evolution_info', { cardId: data.cardId, evolvable: false });
+        return;
+      }
+      socket.emit('card_evolution_info', {
+        cardId: data.cardId,
+        evolvable: true,
+        evoCategory: template.evoCategory,
+        thresholds: template.evolutionThresholds,
+        stageEffects: template.evolutionStageEffects,
+        paths: template.evolutionPaths,
+      });
+    });
+
+    // --- cleanse_card_curse: remove a curse from a card ---
+    socket.on('cleanse_card_curse', function(data) {
+      if (!data || !data.instanceId || !data.curseId) return;
+      var key = socketAccountMap.get(socket.id);
+      if (!key) return;
+
+      var account = accounts.loadAccount(key);
+      if (!account || !account.rpgCards) {
+        socket.emit('card_error', { message: 'Account not found' });
+        return;
+      }
+
+      // Find the card
+      var targetCard = null;
+      for (var ci = 0; ci < account.rpgCards.length; ci++) {
+        if (account.rpgCards[ci].instanceId === data.instanceId) {
+          targetCard = account.rpgCards[ci];
+          break;
+        }
+      }
+      if (!targetCard) {
+        socket.emit('card_error', { message: 'Card not found' });
+        return;
+      }
+
+      // Check if player has a purification scroll in inventory
+      // (purification_crystal is the cleansing resource)
+      if (!account.mmoInventory || !account.mmoInventory.resources) {
+        socket.emit('card_error', { message: 'No purification crystal' });
+        return;
+      }
+      var crystalCount = account.mmoInventory.resources['purification_crystal'] || 0;
+      if (crystalCount < 1) {
+        socket.emit('card_error', { message: 'Requires 1 Purification Crystal' });
+        return;
+      }
+
+      var cleansed = rpgData.cleanseCardCurse(targetCard, data.curseId);
+      if (!cleansed) {
+        socket.emit('card_error', { message: 'Curse not found or not cleansable' });
+        return;
+      }
+
+      // Consume the crystal
+      account.mmoInventory.resources['purification_crystal'] = crystalCount - 1;
+      accounts.saveAccount(account);
+      accounts.invalidateCardEffectsCache(key);
+      socket.emit('card_curse_cleansed', { card: targetCard, curseId: data.curseId });
     });
   }
 };

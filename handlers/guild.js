@@ -4,6 +4,7 @@
 var fs = require('fs');
 var path = require('path');
 var challengesHandler = require('./challenges');
+var rpgData = require('../rpg-data');
 
 // Per-guild vault operation lock: prevents concurrent deposit/withdraw race conditions
 var vaultLocks = new Set();
@@ -466,6 +467,10 @@ module.exports = {
           }
 
           if (!acc.rpgCards) acc.rpgCards = [];
+          if (acc.rpgCards.length >= rpgData.MAX_CARD_COLLECTION) {
+            socket.emit('guild_error', { message: 'Card collection full (' + rpgData.MAX_CARD_COLLECTION + ' max)' });
+            return;
+          }
           var card = guild.vault.cards.splice(cardIdx, 1)[0];
           delete card.depositedBy;
           acc.rpgCards.push(card);

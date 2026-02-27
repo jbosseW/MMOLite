@@ -13,6 +13,10 @@ var directorMacro   = require('./director-macro');
 var directorRaid    = require('./director-raid');
 var directorOcean   = require('./director-ocean');
 var directorLich    = require('./director-lich');
+var directorBaseRaids = require('./director-raids');
+var directorVampire  = require('./director-vampire');
+var directorWerewolf = require('./director-werewolf');
+var directorRifts    = require('./director-rifts');
 
 var _io = null;
 var _state = null;
@@ -22,6 +26,10 @@ var _zoneInterval = null;
 var _macroInterval = null;
 var _oceanInterval = null;
 var _lichInterval = null;
+var _baseRaidsInterval = null;
+var _vampireInterval = null;
+var _werewolfInterval = null;
+var _riftsInterval = null;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -78,7 +86,50 @@ function init(io, state, accounts, socketAccountMap) {
   }, 60000);
   if (_lichInterval && _lichInterval.unref) _lichInterval.unref();
 
-  console.log('[director] AI Event Director initialized (micro=per-tick, zone=30s, macro=5min, ocean=60s, lich=60s)');
+  // Initialize base raids director (5min interval)
+  _baseRaidsInterval = setInterval(function() {
+    try {
+      directorBaseRaids.tick(_io, _state, _accounts, _socketAccountMap);
+    } catch (err) {
+      console.error('[director] Base raids tick error:', err.message);
+    }
+  }, 5 * 60 * 1000);
+  if (_baseRaidsInterval && _baseRaidsInterval.unref) _baseRaidsInterval.unref();
+
+  // Initialize vampire infiltration director (10min interval)
+  directorVampire.init();
+  _vampireInterval = setInterval(function() {
+    try {
+      directorVampire.tick(_io, _state, _accounts, _socketAccountMap);
+    } catch (err) {
+      console.error('[director] Vampire tick error:', err.message);
+    }
+  }, 10 * 60 * 1000);
+  if (_vampireInterval && _vampireInterval.unref) _vampireInterval.unref();
+
+  // Initialize werewolf lunar cycle director (15min interval)
+  directorWerewolf.init();
+  _werewolfInterval = setInterval(function() {
+    try {
+      directorWerewolf.tick(_io, _state, _accounts, _socketAccountMap);
+    } catch (err) {
+      console.error('[director] Werewolf tick error:', err.message);
+    }
+  }, 15 * 60 * 1000);
+  if (_werewolfInterval && _werewolfInterval.unref) _werewolfInterval.unref();
+
+  // Initialize mini-rift director (3min interval)
+  directorRifts.init(_state);
+  _riftsInterval = setInterval(function() {
+    try {
+      directorRifts.tick(_io, _state, _accounts, _socketAccountMap);
+    } catch (err) {
+      console.error('[director] Rifts tick error:', err.message);
+    }
+  }, 3 * 60 * 1000);
+  if (_riftsInterval && _riftsInterval.unref) _riftsInterval.unref();
+
+  console.log('[director] AI Event Director initialized (micro=per-tick, zone=30s, macro=5min, ocean=60s, lich=60s, raids=5min, vampire=10min, werewolf=15min, rifts=3min)');
 }
 
 /**
@@ -112,6 +163,22 @@ function getLichDirector() {
   return directorLich;
 }
 
+function getBaseRaidsDirector() {
+  return directorBaseRaids;
+}
+
+function getVampireDirector() {
+  return directorVampire;
+}
+
+function getWerewolfDirector() {
+  return directorWerewolf;
+}
+
+function getRiftsDirector() {
+  return directorRifts;
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -125,4 +192,8 @@ module.exports = {
   getRaid: getRaid,
   getOceanDirector: getOceanDirector,
   getLichDirector: getLichDirector,
+  getBaseRaidsDirector: getBaseRaidsDirector,
+  getVampireDirector: getVampireDirector,
+  getWerewolfDirector: getWerewolfDirector,
+  getRiftsDirector: getRiftsDirector,
 };

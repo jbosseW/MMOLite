@@ -9,20 +9,14 @@ const filter = require('./filter');
 const ratelimit = require('./ratelimit');
 const pow = require('./pow');
 const shardBridge = require('./shard-bridge');
-const { CoinFlipManager, CHIP_REWARD, MIN_BET, MAX_BET: CF_MAX_BET, COUNTDOWN_MS, RESULT_DISPLAY_MS } = require('./coinflip');
-const plinko = require('./plinko');
 const loot = require('./loot');
-const tcg = require('./tcg');
-const { StockMarket } = require('./stocks');
-const { AuctionHouse } = require('./auction');
 
 // Handler modules — shared utilities
-const { checkEventRate, sanitizeText, validateUrl, saveChipsForSocket, saveAllLobbyChips, enrichInventory, processPokerBots } = require('./handlers/helpers');
+const { checkEventRate, applyRateGrace, clearSocketCooldowns, sanitizeText, validateUrl, enrichInventory } = require('./handlers/helpers');
 
 // MMO handlers (NEW)
 const zoneHandler = require('./handlers/zone');
 const overworldHandler = require('./handlers/overworld');
-const battleHandler = require('./handlers/battle');
 const partyHandler = require('./handlers/party');
 const monstersHandler = require('./handlers/monsters');
 const guildHandler = require('./handlers/guild');
@@ -43,23 +37,17 @@ const dungeonCombatHandler = require('./handlers/dungeon-combat-handler');
 const leviathanHandler = require('./handlers/leviathan');
 const combatHandler = require('./handlers/combat');
 const knowledgeHandler = require('./handlers/knowledge');
+const farmingHandler = require('./handlers/farming');
+const karmaHandler = require('./handlers/karma');
+const factionsHandler = require('./handlers/factions');
+const companionsHandler = require('./handlers/companions');
+const petsHandler = require('./handlers/pets');
+const ascensionHandler = require('./handlers/ascension');
+const prisonHandler = require('./handlers/prison');
 
-// Game Corner handlers (kept from BossCord)
-const gameOrbsHandler = require('./handlers/game-orbs');
-const gameCardsHandler = require('./handlers/game-cards');
-const gameSlotsHandler = require('./handlers/game-slots');
-const gamePlinkoHandler = require('./handlers/game-plinko');
-const gameCoinflipHandler = require('./handlers/game-coinflip');
-const gameScratchHandler = require('./handlers/game-scratch');
-const gameLootboxHandler = require('./handlers/game-lootbox');
+// Shared handlers (kept from BossCord era but still used)
 const inventoryHandler = require('./handlers/inventory');
-const tcgHandler = require('./handlers/tcg');
-const stocksHandler = require('./handlers/stocks');
-const auctionHandler = require('./handlers/auction');
 const accountsHandler = require('./handlers/accounts');
-const clickerHandler = require('./handlers/clicker');
-const gameBridgeHandler = require('./handlers/game-bridge');
-const gameLieroHandler = require('./handlers/game-liero');
 const friendsHandler = require('./handlers/friends');
 const dmsHandler = require('./handlers/dms');
 const updateWarningHandler = require('./handlers/update-warning');
@@ -79,25 +67,6 @@ function isModerator(socketId) {
 /** @type {object|null} */
 let _director = null;
 
-/** @type {import('./game').Game|null} */
-let _game = null;
-/** @type {import('./cardgames').LobbyManager|null} */
-let _lobbyMgr = null;
-/** @type {CoinFlipManager|null} */
-let _coinFlipMgr = null;
-/** @type {Object|null} */
-let _lieroMgr = null;
-let _horseRacingMgr = null;
-/** @type {tcg.TCGBattleManager|null} */
-let _tcgBattleMgr = new tcg.TCGBattleManager();
-/** @type {tcg.TCGTradeManager|null} */
-let _tcgTradeMgr = new tcg.TCGTradeManager();
-/** @type {tcg.TCGTableManager|null} */
-let _tcgTableMgr = new tcg.TCGTableManager();
-/** @type {StockMarket} */
-const _stockMarket = new StockMarket();
-/** @type {AuctionHouse} */
-const _auctionHouse = new AuctionHouse();
 
 // Track account keys linked to sockets: Map<socketId, accountKey>
 const socketAccountMap = new Map();
@@ -152,27 +121,7 @@ const ipConnections = new Map();
 // ---------------------------------------------------------------------------
 // Wire up all Socket.IO event handlers.
 // ---------------------------------------------------------------------------
-function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, lieroManager, horseRacingManager) {
-  _game = game;
-  _lobbyMgr = lobbyManager;
-  _coinFlipMgr = coinFlipManager || new CoinFlipManager();
-  _lieroMgr = lieroManager || null;
-  _horseRacingMgr = horseRacingManager || null;
-  const _serverUtils = serverUtils || {};
-
-  // Start stock market ticker
-  _stockMarket.onTick = function(marketState) {
-    if (io.sockets.adapter.rooms.get('stock_market')?.size > 0) {
-      io.to('stock_market').emit('stock_market_tick', marketState);
-    }
-  };
-  _stockMarket.onEvent = function(event) {
-    if (io.sockets.adapter.rooms.get('stock_market')?.size > 0) {
-      io.to('stock_market').emit('stock_market_event', event);
-    }
-  };
-  _stockMarket.start();
-
+function setupSocket(io) {
   // Load persisted guilds from disk on startup
   guildHandler.loadAllGuilds(state);
 
@@ -187,21 +136,6 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
 
   // Run background re-encryption once on startup
   setTimeout(function() { accounts.reencryptAccounts(); }, 60000);
-
-  // Cleanup expired auction listings every 5 minutes
-  setInterval(function() {
-    const expired = _auctionHouse.cleanupExpired();
-    if (expired.length > 0) {
-      for (const listing of expired) {
-        if (listing.itemType === 'item') {
-          accounts.addInventoryItem(listing.sellerKey, { instanceId: crypto.randomBytes(6).toString('hex'), itemId: listing.itemInfo.id, modifier: listing.itemInfo.modifier || null, serial: listing.itemInfo.serial || null, obtainedAt: Date.now(), source: 'auction_expired' });
-        } else if (listing.itemType === 'card') {
-          accounts.addCard(listing.sellerKey, { instanceId: crypto.randomBytes(6).toString('hex'), cardId: listing.itemInfo.id, rolledStats: listing.itemInfo.rolledStats || null, shiny: listing.itemInfo.shiny || false, obtainedAt: Date.now(), source: 'auction_expired' });
-        }
-      }
-      io.emit('auction_listings_updated');
-    }
-  }, 5 * 60 * 1000);
 
   // Broadcast server stats every 30 seconds
   setInterval(function() {
@@ -422,6 +356,7 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
     if (linkedAccount) {
       user.color = linkedAccount.color;
       user.avatar = linkedAccount.avatar || null;
+      user.race = linkedAccount.race || null;
       user.tag = state.generateTag(accountKey);
       _linkSocket(socket.id, accountKey);
       linkedAccount.lastSeen = Date.now();
@@ -470,6 +405,7 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
       ip: clientIp,
       createdAt: Date.now(),
     });
+    socket._mmoliteSessionToken = sessionToken;
 
     // Load last location for returning players
     var lastLocation = linkedAccount ? accounts.getLastLocation(linkedAccount.key) : null;
@@ -525,6 +461,8 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
         mount: linkedAccount.mount || null,
         plotId: linkedAccount.plotId || null,
         permadeath: !!linkedAccount.permadeath,
+        ascensionMark: !!linkedAccount.ascensionMark,
+        ascensionCount: linkedAccount.ascensionCount || 0,
         dungeonProgress: linkedAccount.dungeonProgress || {
           guildMember: false, guildXp: 0, guildRank: 'stone',
           deepestFloor: 0, totalKills: 0, totalDeaths: 0, bossesKilled: 0,
@@ -583,17 +521,8 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
     // ------------------------------------------------------------------
     // Build deps object for handler modules
     // ------------------------------------------------------------------
-    function _boundSaveChipsForSocket(socketId, chips) {
-      saveChipsForSocket(socketAccountMap, accounts, socketId, chips);
-    }
-    function _boundSaveAllLobbyChips(lobby) {
-      saveAllLobbyChips(socketAccountMap, accounts, lobby);
-    }
     function _boundEnrichInventory(key) {
       return enrichInventory(accounts, loot, key);
-    }
-    function _boundProcessPokerBots(io, lobbyMgr, lobbyId) {
-      processPokerBots(io, lobbyMgr, lobbyId, socketAccountMap, accounts);
     }
 
     const deps = {
@@ -606,27 +535,13 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
       ratelimit: ratelimit,
       pow: pow,
       loot: loot,
-      tcg: tcg,
-      plinko: plinko,
-      game: _game,
-      lobbyManager: _lobbyMgr,
-      coinFlipManager: _coinFlipMgr,
-      tcgBattleManager: _tcgBattleMgr,
-      tcgTradeManager: _tcgTradeMgr,
-      tcgTableManager: _tcgTableMgr,
-      stockMarket: _stockMarket,
-      auctionHouse: _auctionHouse,
-      lieroManager: _lieroMgr,
       checkEventRate: checkEventRate,
+      applyRateGrace: applyRateGrace,
       sanitizeText: sanitizeText,
       validateUrl: validateUrl,
       isModerator: isModerator,
       enrichInventory: _boundEnrichInventory,
-      processPokerBots: _boundProcessPokerBots,
-      saveChipsForSocket: _boundSaveChipsForSocket,
-      saveAllLobbyChips: _boundSaveAllLobbyChips,
       MODERATORS: MODERATORS,
-      CoinFlipConstants: { CHIP_REWARD: CHIP_REWARD, MIN_BET: MIN_BET, CF_MAX_BET: CF_MAX_BET, COUNTDOWN_MS: COUNTDOWN_MS, RESULT_DISPLAY_MS: RESULT_DISPLAY_MS },
       _removeFromIpTracking: _removeFromIpTracking,
       sessionTokens: sessionTokens,
       challengesHandler: challengesHandler,
@@ -635,10 +550,12 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
       directorRaid: _director ? _director.getRaid() : null,
       directorOcean: _director ? _director.getOceanDirector() : null,
       directorLich: _director ? _director.getLichDirector() : null,
+      directorRifts: _director ? _director.getRiftsDirector() : null,
       getPlayerCombat: dungeonHandler.getPlayerCombat,
       serverRules: shardBridge.config && shardBridge.config.rules ? shardBridge.config.rules : null,
       isServerHost: isServerHost,
       _unlinkSocket: _unlinkSocket,
+      getSocketsForAccount: _getSocketsForAccount,
     };
 
     // ------------------------------------------------------------------
@@ -648,7 +565,6 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
     // MMO core handlers
     zoneHandler.init(io, socket, deps);
     overworldHandler.init(io, socket, deps);
-    battleHandler.init(io, socket, deps);
     partyHandler.init(io, socket, deps);
     monstersHandler.init(io, socket, deps);
     guildHandler.init(io, socket, deps);
@@ -669,24 +585,18 @@ function setupSocket(io, game, lobbyManager, serverUtils, coinFlipManager, liero
     leviathanHandler.init(io, socket, deps);
     combatHandler.init(io, socket, deps);
     knowledgeHandler.init(io, socket, deps);
+    farmingHandler.init(io, socket, deps);
+    karmaHandler.init(io, socket, deps);
+    factionsHandler.init(io, socket, deps);
+    companionsHandler.init(io, socket, deps);
+    petsHandler.init(io, socket, deps);
+    ascensionHandler.init(io, socket, deps);
+    prisonHandler.init(io, socket, deps);
 
-    // Game Corner handlers (from BossCord)
-    gameOrbsHandler.init(io, socket, deps);
-    gameCardsHandler.init(io, socket, deps);
-    gameSlotsHandler.init(io, socket, deps);
-    gamePlinkoHandler.init(io, socket, deps);
-    gameCoinflipHandler.init(io, socket, deps);
-    gameScratchHandler.init(io, socket, deps);
-    gameLootboxHandler.init(io, socket, deps);
+    // Shared handlers
     inventoryHandler.init(io, socket, deps);
-    tcgHandler.init(io, socket, deps);
-    stocksHandler.init(io, socket, deps);
-    auctionHandler.init(io, socket, deps);
     accountsHandler.init(io, socket, deps);
     updateWarningHandler.init(io, socket, deps);
-    clickerHandler.init(io, socket, deps);
-    gameBridgeHandler.init(io, socket, deps);
-    gameLieroHandler.init(io, socket, deps);
     friendsHandler.init(io, socket, deps);
     dmsHandler.init(io, socket, deps);
     challengesHandler.init(io, socket, deps);
@@ -717,104 +627,9 @@ function broadcastChipsUpdate(io, accountKey, newChips, reason) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Namespace deps factory
-// ---------------------------------------------------------------------------
-function createDepsFactory(io, game, lobbyManager, coinFlipManager, lieroManager, horseRacingManager, chessManager, poolManager) {
-  return function depsFactory(socket, accountKey) {
-    const linkedAccount = accounts.loadAccount(accountKey);
-    if (!linkedAccount) return null;
-
-    let user = null;
-    for (const [sid, key] of socketAccountMap) {
-      if (key === accountKey) {
-        user = state.users.get(sid);
-        if (user) break;
-      }
-    }
-    if (!user) {
-      user = {
-        id: socket.id,
-        name: linkedAccount.username || 'User',
-        color: linkedAccount.color || '#dcddde',
-        tag: state.generateTag ? state.generateTag(accountKey) : '',
-        avatar: linkedAccount.avatar || null,
-        joinedAt: Date.now(),
-      };
-    }
-
-    _linkSocket(socket.id, accountKey);
-    socket.on('disconnect', function() {
-      // Clear server host socket ID if host disconnects
-      // (but keep _serverHostAccountKey so they can reclaim on reconnect)
-      if (socket.id === _serverHostSocketId) {
-        _serverHostSocketId = null;
-      }
-      _unlinkSocket(socket.id);
-    });
-
-    function _boundSaveChipsForSocket(socketId, chips) {
-      saveChipsForSocket(socketAccountMap, accounts, socketId, chips);
-    }
-    function _boundSaveAllLobbyChips(lobby) {
-      saveAllLobbyChips(socketAccountMap, accounts, lobby);
-    }
-    function _boundEnrichInventory(key) {
-      return enrichInventory(accounts, loot, key);
-    }
-    function _boundProcessPokerBots(nsOrIo, lobbyMgr, lobbyId) {
-      processPokerBots(nsOrIo, lobbyMgr, lobbyId, socketAccountMap, accounts);
-    }
-    function _boundBroadcastChipsUpdate(accKey, newChips, reason) {
-      broadcastChipsUpdate(io, accKey, newChips, reason);
-    }
-
-    return {
-      user: user,
-      socketAccountMap: socketAccountMap,
-      ipConnections: ipConnections,
-      accounts: accounts,
-      state: state,
-      filter: filter,
-      ratelimit: ratelimit,
-      pow: pow,
-      loot: loot,
-      tcg: tcg,
-      plinko: plinko,
-      game: game,
-      lobbyManager: lobbyManager,
-      coinFlipManager: coinFlipManager,
-      tcgBattleManager: _tcgBattleMgr,
-      tcgTradeManager: _tcgTradeMgr,
-      tcgTableManager: _tcgTableMgr,
-      stockMarket: _stockMarket,
-      auctionHouse: _auctionHouse,
-      lieroManager: lieroManager || _lieroMgr,
-      horseRacingManager: horseRacingManager || _horseRacingMgr,
-      chessManager: chessManager || null,
-      poolManager: poolManager || null,
-      checkEventRate: checkEventRate,
-      sanitizeText: sanitizeText,
-      validateUrl: validateUrl,
-      isModerator: isModerator,
-      enrichInventory: _boundEnrichInventory,
-      processPokerBots: _boundProcessPokerBots,
-      saveChipsForSocket: _boundSaveChipsForSocket,
-      saveAllLobbyChips: _boundSaveAllLobbyChips,
-      broadcastChipsUpdate: _boundBroadcastChipsUpdate,
-      MODERATORS: MODERATORS,
-      CoinFlipConstants: { CHIP_REWARD: CHIP_REWARD, MIN_BET: MIN_BET, CF_MAX_BET: CF_MAX_BET, COUNTDOWN_MS: COUNTDOWN_MS, RESULT_DISPLAY_MS: RESULT_DISPLAY_MS },
-      _removeFromIpTracking: function() {},
-      challengesHandler: challengesHandler,
-      serverRules: shardBridge.config && shardBridge.config.rules ? shardBridge.config.rules : null,
-      isServerHost: isServerHost,
-    };
-  };
-}
-
 function setDirector(director) {
   _director = director;
 }
 
 function getSocketAccountMap() { return socketAccountMap; }
-module.exports = { setupSocket, socketAccountMap, getSocketAccountMap, MODERATORS, createDepsFactory, _stockMarket, _auctionHouse, sessionTokens, setDirector };
+module.exports = { setupSocket, socketAccountMap, getSocketAccountMap, MODERATORS, sessionTokens, setDirector };

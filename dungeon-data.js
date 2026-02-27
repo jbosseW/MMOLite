@@ -15,6 +15,7 @@ var RIFT_SEED_PREFIX = 'rift:';
 var CAVE_SEED_PREFIX = 'cave:';
 var WORLD_DUNGEON_SEED_PREFIX = 'world:';
 var STRUCTURE_SEED_PREFIX = 'struct:';
+var MINI_RIFT_SEED_PREFIX = 'minirift:';
 var MAX_FLOOR_CACHE = 64;
 var TILE_SIZE = 32;
 
@@ -95,6 +96,7 @@ var TILE = {
   SHRINE:      11,
   BOSS_DOOR:   12,
   SHORTCUT:    13,
+  CORPSE:      14,
 };
 
 // ---------------------------------------------------------------------------
@@ -640,6 +642,9 @@ var THEME_ELEMENT_MAP = {
   lich_sanctum:      'dark',
   cogwork_foundry:   'lightning',
   astral_rift:       'arcane',
+  hollow_breach:     'shadow',
+  shattered_veil:    'shadow',
+  desperation_core:  'arcane',
   dinosaur_jungle:   'earth',
   spider_hive:       'poison',
   sunken_depths:     'ice',
@@ -699,6 +704,9 @@ var THEME_COMBAT_PROPERTIES = {
   lich_sanctum:      { resistances: { shadow: 0.4, poison: 0.5 },         weaknesses: { holy: 1.5, fire: 1.3 },       damageType: 'shadow' },
   cogwork_foundry:   { resistances: { lightning: 0.5, poison: 0.7 },      weaknesses: { water: 1.4 },                 damageType: 'lightning' },
   astral_rift:       { resistances: { arcane: 0.4 },                       weaknesses: { holy: 1.3, shadow: 1.3 },     damageType: 'arcane' },
+  hollow_breach:     { resistances: { shadow: 0.5 },                       weaknesses: { holy: 1.5, fire: 1.3 },       damageType: 'shadow' },
+  shattered_veil:    { resistances: { shadow: 0.4 },                       weaknesses: { holy: 1.5, fire: 1.3 },       damageType: 'shadow' },
+  desperation_core:  { resistances: { arcane: 0.4, shadow: 0.5 },         weaknesses: { holy: 1.5, fire: 1.3 },       damageType: 'arcane' },
   dinosaur_jungle:   { resistances: { earth: 0.6, nature: 0.7 },          weaknesses: { fire: 1.4, ice: 1.3 },        damageType: 'nature' },
   spider_hive:       { resistances: { poison: 0.4 },                       weaknesses: { fire: 1.5, slashing: 1.3 },   damageType: 'poison' },
   sunken_depths:     { resistances: { water: 0.4, fire: 0.7 },            weaknesses: { lightning: 1.5 },              damageType: 'water' },
@@ -1550,7 +1558,51 @@ ENEMY_POOLS.astral_rift = {
   ],
 };
 
-// --- 21. dinosaur_jungle ---
+// --- 21. hollow_breach (mini-rift) ---
+// Secondary rifts — The Soldier's consciousness bleeding through reality.
+// The Hollow are rift inhabitants that mimic known race shapes but get the details wrong.
+// Used exclusively by mini-rift dungeons (overworld-rifts.js).
+ENEMY_POOLS.hollow_breach = {
+  shallow: [
+    { id: 'hb_mimicry',    name: 'Hollow Mimicry',          hp: 18, atk: 8,  def: 3,  xp: 9,  gold: 4, isLiving: false, element: 'shadow' },
+    { id: 'hb_parasite',   name: 'Void Parasite',           hp: 22, atk: 10, def: 2,  xp: 10, gold: 4, isLiving: false, element: 'shadow' },
+    { id: 'hb_shard',      name: 'Fractured Shard',         hp: 28, atk: 9,  def: 5,  xp: 11, gold: 5, isLiving: false, element: 'arcane' },
+    { id: 'hb_walker',     name: 'Hollow Walker',           hp: 30, atk: 12, def: 4,  xp: 12, gold: 5, isLiving: false, element: 'shadow', archetype: 'melee' },
+  ],
+  mid: [
+    { id: 'hb_stealer',    name: 'Shape Stealer',           hp: 55, atk: 20, def: 8,  xp: 30, gold: 14, isLiving: false, element: 'shadow', archetype: 'controller', abilities: [{ name: 'Identity Theft', damage: 12, effect: 'confuse', chance: 0.3 }] },
+    { id: 'hb_weaver',     name: 'Void Weaver',             hp: 60, atk: 22, def: 7,  xp: 32, gold: 15, isLiving: false, element: 'shadow', archetype: 'caster', abilities: [{ name: 'Void Thread', damage: 15, effect: 'slow', chance: 0.35 }] },
+    { id: 'hb_echo',       name: 'Desperate Echo',          hp: 65, atk: 24, def: 9,  xp: 34, gold: 16, isLiving: false, element: 'arcane', archetype: 'melee' },
+    { id: 'hb_messenger',  name: 'Torn Messenger',          hp: 70, atk: 26, def: 10, xp: 36, gold: 16, isLiving: false, element: 'shadow', archetype: 'ranged', abilities: [{ name: 'Desperate Plea', damage: 18, effect: 'fear', chance: 0.25 }] },
+  ],
+  deep: [
+    { id: 'hb_knight',     name: 'Hollow Knight',           hp: 130, atk: 30, def: 16, xp: 58, gold: 30, isLiving: false, element: 'shadow', archetype: 'melee', abilities: [{ name: 'Void Slash', damage: 22, effect: 'bleed', chance: 0.4 }] },
+    { id: 'hb_horror',     name: 'Void Horror',             hp: 140, atk: 32, def: 14, xp: 62, gold: 32, isLiving: false, element: 'shadow', archetype: 'controller', abilities: [{ name: 'Reality Warp', damage: 20, effect: 'confuse', chance: 0.45 }] },
+    { id: 'hb_eater',      name: 'Reality Eater',           hp: 150, atk: 34, def: 15, xp: 66, gold: 34, isLiving: false, element: 'arcane', archetype: 'caster', abilities: [{ name: 'Consume Reality', damage: 25, effect: 'drain', chance: 0.35 }] },
+  ],
+  boss: [
+    {
+      id: 'hb_anchor',
+      name: 'The Rift Anchor',
+      hp: 400, atk: 38, def: 24, xp: 220, gold: 130,
+      isLiving: false, element: 'shadow', archetype: 'boss',
+      phases: [
+        { name: 'Unstable', hpThreshold: 1.0, atkMult: 1.0, defMult: 1.0 },
+        { name: 'Fracturing', hpThreshold: 0.5, atkMult: 1.3, defMult: 0.9 },
+        { name: 'Final Scream', hpThreshold: 0.2, atkMult: 1.6, defMult: 0.7 },
+      ],
+      abilities: [
+        { name: 'Void Pulse', damage: 20, effect: 'knockback', chance: 0.4, cooldown: 2 },
+        { name: 'Reality Shatter', damage: 30, effect: 'confuse', chance: 0.3, cooldown: 3 },
+        { name: 'Summon Hollow', damage: 0, effect: 'summon', chance: 0.25, cooldown: 4, summonId: 'hb_mimicry', summonCount: 2 },
+        { name: 'Desperation Wave', damage: 35, effect: 'fear', chance: 0.2, cooldown: 5 },
+      ],
+      drops: ['purification_crystal', 'dark_crystal', 'mana_crystal'],
+    },
+  ],
+};
+
+// --- 22. dinosaur_jungle ---
 // A primeval jungle preserved deep underground where prehistoric beasts
 // never went extinct. The rift pulled an ancient era into its walls.
 // Biomes: Forest (5), Swamp (7), Elven South (16)
@@ -1955,6 +2007,12 @@ THEME_COLORS.lich_sanctum    = { wall: { r: 40, g: 25, b: 50 },     floor: { r: 
 THEME_COLORS.cogwork_foundry = { wall: { r: 100, g: 75, b: 40 },    floor: { r: 130, g: 125, b: 120 }, accent: { r: 200, g: 210, b: 220 } };
 // astral_rift: deep space walls, nebula purple floor, starlight accents
 THEME_COLORS.astral_rift     = { wall: { r: 10, g: 5, b: 30 },      floor: { r: 50, g: 30, b: 80 },    accent: { r: 180, g: 200, b: 255 } };
+// hollow_breach: deep void purple walls, muted purple floor, bright violet accents
+THEME_COLORS.hollow_breach   = { wall: { r: 20, g: 5, b: 35 },      floor: { r: 60, g: 40, b: 70 },    accent: { r: 160, g: 80, b: 255 } };
+// shattered_veil: near-black void walls, dark slate floor, intense magenta accents
+THEME_COLORS.shattered_veil  = { wall: { r: 8, g: 3, b: 15 },       floor: { r: 35, g: 30, b: 40 },    accent: { r: 220, g: 50, b: 200 } };
+// desperation_core: void purple walls, corrupted stone floor, sickly green Atlas-radiation accents
+THEME_COLORS.desperation_core = { wall: { r: 25, g: 8, b: 40 },     floor: { r: 50, g: 45, b: 42 },    accent: { r: 120, g: 220, b: 80 } };
 // dinosaur_jungle: dense green walls, jungle floor, primal amber accents
 THEME_COLORS.dinosaur_jungle = { wall: { r: 30, g: 60, b: 25 },     floor: { r: 90, g: 75, b: 50 },    accent: { r: 220, g: 180, b: 50  } };
 // spider_hive: dark brown walls, web white floor, venom green accents
@@ -2113,6 +2171,9 @@ var THEME_LAYOUT_MAP = {
   lich_sanctum:       [{ layout: 'temple_halls', weight: 5 }, { layout: 'bsp_rooms', weight: 3 }, { layout: 'arena', weight: 2 }],
   cogwork_foundry:    [{ layout: 'maze', weight: 5 }, { layout: 'arena', weight: 3 }, { layout: 'bsp_rooms', weight: 2 }],
   astral_rift:        [{ layout: 'island', weight: 6 }, { layout: 'open_cavern', weight: 3 }, { layout: 'organic', weight: 1 }],
+  hollow_breach:      [{ layout: 'bsp_rooms', weight: 5 }, { layout: 'temple_halls', weight: 3 }, { layout: 'organic', weight: 2 }],
+  shattered_veil:     [{ layout: 'island', weight: 5 }, { layout: 'open_cavern', weight: 3 }, { layout: 'organic', weight: 2 }],
+  desperation_core:   [{ layout: 'temple_halls', weight: 5 }, { layout: 'arena', weight: 3 }, { layout: 'bsp_rooms', weight: 2 }],
   dinosaur_jungle:    [{ layout: 'organic', weight: 5 }, { layout: 'open_cavern', weight: 3 }, { layout: 'lake', weight: 2 }],
   spider_hive:        [{ layout: 'organic', weight: 5 }, { layout: 'maze', weight: 3 }, { layout: 'open_cavern', weight: 2 }],
   sunken_depths:      [{ layout: 'lake', weight: 7 }, { layout: 'island', weight: 2 }, { layout: 'organic', weight: 1 }],
@@ -3315,6 +3376,9 @@ var THEME_POOL_FALLBACK = {
   lich_sanctum:        'shadow_realm',
   cogwork_foundry:     'gnomish_workshop',
   astral_rift:         'shadow_realm',
+  hollow_breach:       'astral_rift',
+  shattered_veil:      'hollow_breach',
+  desperation_core:    'hollow_breach',
   dinosaur_jungle:     'overgrown_temple',
   spider_hive:         'fungal_forest',
   sunken_depths:       'flooded_ruins',
@@ -3612,6 +3676,147 @@ var DUNGEON_NPCS = [
     dialogue: 'The guards are distracted. I mapped a shortcut to the lower floors.',
     reward: { revealMap: true },
     questHook: 'shortcut_reveal',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Dead adventurer / skeleton templates (corpse interactables)
+// ---------------------------------------------------------------------------
+
+var DUNGEON_CORPSES = [
+  // Adventurer types — better loot
+  {
+    id: 'fallen_adventurer',
+    name: 'Fallen Adventurer',
+    description: 'A fallen adventurer, their pack still intact.',
+    goldMin: 5, goldMax: 30,
+    resources: ['iron_ore', 'herbs', 'potion_health'],
+    resourceChance: 0.60,
+    cardChance: 0.03,
+    bookChanceMult: 1.0,
+    themeAffinity: null,
+  },
+  {
+    id: 'dead_scholar',
+    name: 'Dead Scholar',
+    description: 'A scholar\'s remains, clutching a leather journal.',
+    goldMin: 2, goldMax: 15,
+    resources: ['herbs', 'glass_vial', 'mana_crystal'],
+    resourceChance: 0.40,
+    cardChance: 0.02,
+    bookChanceMult: 2.0,
+    themeAffinity: ['ancient_library', 'overgrown_temple', 'throne_dungeon'],
+  },
+  {
+    id: 'slain_knight',
+    name: 'Slain Knight',
+    description: 'A knight in battered armor, sword still in hand.',
+    goldMin: 10, goldMax: 40,
+    resources: ['iron_bar', 'bronze_bar', 'potion_health'],
+    resourceChance: 0.55,
+    cardChance: 0.04,
+    bookChanceMult: 0.8,
+    themeAffinity: ['stone_keep', 'grand_hall', 'armory_vault', 'catacombs'],
+  },
+  {
+    id: 'dead_mage',
+    name: 'Dead Mage',
+    description: 'A mage\'s robes, singed. Arcane residue lingers.',
+    goldMin: 3, goldMax: 20,
+    resources: ['mana_crystal', 'glass_lens', 'herbs'],
+    resourceChance: 0.50,
+    cardChance: 0.05,
+    bookChanceMult: 1.5,
+    themeAffinity: ['crystal_cavern', 'shadow_realm', 'floating_islands'],
+  },
+  {
+    id: 'merchant_remains',
+    name: 'Merchant Remains',
+    description: 'A merchant\'s skeleton surrounded by scattered goods.',
+    goldMin: 15, goldMax: 50,
+    resources: ['gem_rough', 'glass', 'cogs', 'springs'],
+    resourceChance: 0.70,
+    cardChance: 0.02,
+    bookChanceMult: 0.5,
+    themeAffinity: null,
+  },
+  // Skeleton types — less loot, more atmospheric/lore-focused
+  {
+    id: 'ancient_skeleton',
+    name: 'Ancient Skeleton',
+    description: 'Bones centuries old, still wearing rusted armor.',
+    goldMin: 1, goldMax: 10,
+    resources: ['iron_ore', 'stone'],
+    resourceChance: 0.30,
+    cardChance: 0.01,
+    bookChanceMult: 1.0,
+    themeAffinity: ['catacombs', 'bone_yard', 'sand_tomb'],
+  },
+  {
+    id: 'skeleton_party',
+    name: 'Skeleton Party',
+    description: 'Three skeletons slumped against each other. They didn\'t make it.',
+    goldMin: 5, goldMax: 25,
+    resources: ['iron_ore', 'herbs', 'potion_health'],
+    resourceChance: 0.45,
+    cardChance: 0.03,
+    bookChanceMult: 1.0,
+    themeAffinity: null,
+  },
+  {
+    id: 'chained_skeleton',
+    name: 'Chained Skeleton',
+    description: 'A skeleton chained to the wall. A prisoner, long forgotten.',
+    goldMin: 0, goldMax: 5,
+    resources: ['iron_ore'],
+    resourceChance: 0.20,
+    cardChance: 0.01,
+    bookChanceMult: 1.2,
+    themeAffinity: ['stone_keep', 'grand_hall', 'throne_dungeon'],
+  },
+  {
+    id: 'robed_skeleton',
+    name: 'Robed Skeleton',
+    description: 'A skeleton in tattered robes, a faded tome nearby.',
+    goldMin: 1, goldMax: 8,
+    resources: ['herbs', 'mana_crystal'],
+    resourceChance: 0.35,
+    cardChance: 0.02,
+    bookChanceMult: 2.0,
+    themeAffinity: ['overgrown_temple', 'ancient_library', 'shadow_realm'],
+  },
+  {
+    id: 'skeleton_at_desk',
+    name: 'Skeleton at Desk',
+    description: 'A skeleton seated at a crumbling desk, quill in hand.',
+    goldMin: 2, goldMax: 12,
+    resources: ['glass_vial', 'herbs'],
+    resourceChance: 0.30,
+    cardChance: 0.01,
+    bookChanceMult: 2.0,
+    themeAffinity: ['ancient_library', 'clockwork_maze', 'throne_dungeon'],
+  },
+  {
+    id: 'crushed_remains',
+    name: 'Crushed Remains',
+    description: 'Remains beneath a collapsed ceiling beam.',
+    goldMin: 0, goldMax: 8,
+    resources: ['stone', 'iron_ore'],
+    resourceChance: 0.25,
+    cardChance: 0.01,
+    bookChanceMult: 0.5,
+    themeAffinity: ['crystal_cavern', 'lava_rift', 'frozen_depths'],
+  },
+  {
+    id: 'ritual_corpse',
+    name: 'Ritual Corpse',
+    description: 'A body arranged in a ritual circle. Dark stains surround it.',
+    goldMin: 3, goldMax: 18,
+    resources: ['mana_crystal', 'gem_rough', 'herbs'],
+    resourceChance: 0.50,
+    cardChance: 0.04,
+    bookChanceMult: 1.8,
+    themeAffinity: ['shadow_realm', 'bone_yard', 'catacombs', 'blood_altar'],
   },
 ];
 
@@ -4211,6 +4416,7 @@ function generateFloor(floorNum, seed, options) {
   var traps = [];
   var npcs = [];
   var campSpots = [];
+  var corpses = [];
   var campsPlaced = 0;
 
   for (var ri2 = 0; ri2 < rooms.length; ri2++) {
@@ -4383,6 +4589,60 @@ function generateFloor(floorNum, seed, options) {
         }
       }
     }
+
+    // Corpses / dead adventurers: 0-1 per room (no corpses on boss floors)
+    if (!isBossFloor) {
+      var corpseChance = 0.08 + floorNum * 0.01;
+      if (corpseChance > 0.30) corpseChance = 0.30;
+      if (rng() < corpseChance) {
+        var corpseX = rm.x + 1 + Math.floor(rng() * (rm.w - 2));
+        var corpseY = rm.y + 1 + Math.floor(rng() * (rm.h - 2));
+        if (grid[corpseY][corpseX] === TILE.FLOOR) {
+          grid[corpseY][corpseX] = TILE.CORPSE;
+          // Select template: prefer theme-affinity matches
+          var corpsePool = [];
+          for (var cpi = 0; cpi < DUNGEON_CORPSES.length; cpi++) {
+            var ct = DUNGEON_CORPSES[cpi];
+            if (ct.themeAffinity === null || ct.themeAffinity.indexOf(theme) >= 0) {
+              corpsePool.push(ct);
+            }
+          }
+          if (corpsePool.length === 0) corpsePool = DUNGEON_CORPSES;
+          var corpseTemplate = corpsePool[Math.floor(rng() * corpsePool.length)];
+          // Scale gold with floor depth
+          var corpseGoldMin = corpseTemplate.goldMin + (floorNum >= 10 ? Math.floor(floorNum * 0.5) : 0);
+          var corpseGoldMax = corpseTemplate.goldMax + (floorNum >= 10 ? Math.floor(floorNum * 1.0) : 0);
+          var corpseGold = corpseGoldMin + Math.floor(rng() * (corpseGoldMax - corpseGoldMin + 1));
+          // Resource roll
+          var corpseResource = null;
+          var corpseResourceAmt = 0;
+          if (rng() < corpseTemplate.resourceChance) {
+            corpseResource = corpseTemplate.resources[Math.floor(rng() * corpseTemplate.resources.length)];
+            corpseResourceAmt = 1 + Math.floor(rng() * 2);
+            // Deeper floors: rarer resources from template pool
+            if (floorNum >= 20 && corpseTemplate.resources.length > 1) {
+              corpseResource = corpseTemplate.resources[Math.floor(rng() * corpseTemplate.resources.length)];
+              corpseResourceAmt += 1;
+            }
+          }
+          var corpseHasCard = rng() < corpseTemplate.cardChance;
+          corpses.push({
+            x: corpseX,
+            y: corpseY,
+            id: corpseTemplate.id,
+            name: corpseTemplate.name,
+            description: corpseTemplate.description,
+            gold: corpseGold,
+            resource: corpseResource,
+            resourceAmount: corpseResourceAmt,
+            hasCard: corpseHasCard,
+            bookChanceMult: corpseTemplate.bookChanceMult,
+            roomIndex: ri2,
+            examined: false,
+          });
+        }
+      }
+    }
   }
 
   // Special events: 1% chance per floor
@@ -4430,6 +4690,7 @@ function generateFloor(floorNum, seed, options) {
     chests:       chests,
     traps:        traps,
     npcs:         npcs,
+    corpses:      corpses,
     campSpots:    campSpots,
     isBossFloor:  isBossFloor,
     isRaidBossFloor: isRaidBossFloor,
@@ -4528,6 +4789,9 @@ var THEME_BONUS_LOOT = {
   lich_sanctum:       ['dark_crystal', 'mana_crystal', 'gem_cut'],
   cogwork_foundry:    ['cogs', 'gears', 'springs', 'steel_bar'],
   astral_rift:        ['mana_crystal', 'dark_crystal', 'dungeon_essence'],
+  hollow_breach:      ['dark_crystal', 'mana_crystal', 'purification_crystal'],
+  shattered_veil:     ['dark_crystal', 'mana_crystal', 'dungeon_essence'],
+  desperation_core:   ['dark_crystal', 'purification_crystal', 'mana_crystal', 'dungeon_essence'],
   dinosaur_jungle:    ['wood', 'herbs', 'stone'],
   spider_hive:        ['herbs', 'mushroom', 'dark_crystal'],
   sunken_depths:      ['seaweed', 'shellfish', 'gem_rough'],
@@ -5654,11 +5918,107 @@ function generateStructureFloor(structDef, floorNum, seed, totalFloors) {
   return floor;
 }
 
+// ---------------------------------------------------------------------------
+// Mini-Rift floor generation
+// ---------------------------------------------------------------------------
+// Themes progress: floors 1-5 hollow_breach, 6-14 shattered_veil, 15-20 desperation_core
+// Final floor always ARENA layout with boss. Enemy stats scale with tier.
+
+var MINI_RIFT_TIER_TABLE = [
+  { maxFloors: 7,  tier: 1, difficulty: 'easy',    lootTier: 'uncommon',   xpMult: 1.2, minLevel: 5,  corruptionRadius: 3, lifetimeH: 4 },
+  { maxFloors: 10, tier: 2, difficulty: 'medium',   lootTier: 'uncommon',   xpMult: 1.4, minLevel: 10, corruptionRadius: 4, lifetimeH: 5 },
+  { maxFloors: 14, tier: 3, difficulty: 'hard',     lootTier: 'rare',       xpMult: 1.6, minLevel: 15, corruptionRadius: 5, lifetimeH: 6 },
+  { maxFloors: 17, tier: 4, difficulty: 'hard',     lootTier: 'rare',       xpMult: 1.8, minLevel: 20, corruptionRadius: 5, lifetimeH: 7 },
+  { maxFloors: 20, tier: 5, difficulty: 'extreme',  lootTier: 'ultra_rare', xpMult: 2.0, minLevel: 25, corruptionRadius: 6, lifetimeH: 8 },
+];
+
+var MINI_RIFT_BOSS_REWARDS = [
+  { tier: 1, gold: 75,  darkCrystal: 3, purificationCrystal: 1, cardPacks: 1, xpBonus: 200 },
+  { tier: 2, gold: 100, darkCrystal: 4, purificationCrystal: 1, cardPacks: 1, xpBonus: 400 },
+  { tier: 3, gold: 150, darkCrystal: 5, purificationCrystal: 2, cardPacks: 2, xpBonus: 700 },
+  { tier: 4, gold: 200, darkCrystal: 6, purificationCrystal: 2, cardPacks: 2, xpBonus: 1000 },
+  { tier: 5, gold: 300, darkCrystal: 7, purificationCrystal: 3, cardPacks: 3, xpBonus: 1500 },
+];
+
+function getMiniRiftTier(totalFloors) {
+  for (var i = 0; i < MINI_RIFT_TIER_TABLE.length; i++) {
+    if (totalFloors <= MINI_RIFT_TIER_TABLE[i].maxFloors) return MINI_RIFT_TIER_TABLE[i];
+  }
+  return MINI_RIFT_TIER_TABLE[MINI_RIFT_TIER_TABLE.length - 1];
+}
+
+function getMiniRiftBossRewards(tier) {
+  if (tier >= 1 && tier <= MINI_RIFT_BOSS_REWARDS.length) return MINI_RIFT_BOSS_REWARDS[tier - 1];
+  return MINI_RIFT_BOSS_REWARDS[0];
+}
+
+function generateMiniRiftFloor(riftDef, floorNum, seed, totalFloors) {
+  if (!riftDef) return null;
+  totalFloors = totalFloors || riftDef.totalFloors || 10;
+
+  // Select theme based on floor depth
+  var theme;
+  if (floorNum <= 5) theme = 'hollow_breach';
+  else if (floorNum <= 14) theme = 'shattered_veil';
+  else theme = 'desperation_core';
+
+  var isFinalFloor = (floorNum === totalFloors);
+  var tierInfo = getMiniRiftTier(totalFloors);
+  var tierScale = 0.8 + (tierInfo.tier * 0.15);
+
+  // Generate using the standard pipeline — type 'cave' for finite sizing
+  var floor = generateFloor(floorNum, MINI_RIFT_SEED_PREFIX + seed, {
+    type: 'cave',
+    isRift: false,
+    biome: 12, // WASTES — void terrain
+    totalFloors: totalFloors,
+    theme: theme,
+    enemyPool: 'hollow_breach',
+    themeSeed: MINI_RIFT_SEED_PREFIX + seed,
+  });
+
+  if (!floor) return null;
+
+  // Scale enemy HP/ATK by tier
+  for (var ei = 0; ei < floor.enemies.length; ei++) {
+    var e = floor.enemies[ei];
+    e.hp = Math.floor((e.hp || 30) * tierScale);
+    e.atk = Math.floor((e.atk || 8) * tierScale);
+    e.xp = Math.floor((e.xp || 10) * tierInfo.xpMult);
+    e.gold = Math.floor((e.gold || 5) * tierScale);
+  }
+
+  // Upgrade chests based on rift loot tier
+  var themeRng = seededRandom(chunkSeed(floorNum, 0, MINI_RIFT_SEED_PREFIX + seed + ':loot'));
+  if (tierInfo.lootTier) {
+    for (var ci = 0; ci < floor.chests.length; ci++) {
+      if (tierInfo.lootTier === 'uncommon' && floor.chests[ci].tier === 'common') {
+        if (themeRng() < 0.5) floor.chests[ci].tier = 'uncommon';
+      } else if (tierInfo.lootTier === 'rare') {
+        if (floor.chests[ci].tier === 'common' && themeRng() < 0.6) floor.chests[ci].tier = 'uncommon';
+        if (floor.chests[ci].tier === 'uncommon' && themeRng() < 0.35) floor.chests[ci].tier = 'rare';
+      } else if (tierInfo.lootTier === 'ultra_rare') {
+        if (floor.chests[ci].tier === 'common') floor.chests[ci].tier = 'uncommon';
+        if (floor.chests[ci].tier === 'uncommon' && themeRng() < 0.5) floor.chests[ci].tier = 'rare';
+        if (floor.chests[ci].tier === 'rare' && themeRng() < 0.2) floor.chests[ci].tier = 'ultra_rare';
+      }
+    }
+  }
+
+  // Tag floor with mini-rift metadata
+  floor.isMiniRift = true;
+  floor.riftTier = tierInfo.tier;
+  floor.isFinalFloor = isFinalFloor;
+
+  return floor;
+}
+
 module.exports = {
   // Constants
   RIFT_SEED_PREFIX,
   CAVE_SEED_PREFIX,
   WORLD_DUNGEON_SEED_PREFIX,
+  MINI_RIFT_SEED_PREFIX,
   MAX_FLOOR_CACHE,
   TILE_SIZE,
   RIFT_FLOOR_SIZE,
@@ -5710,9 +6070,10 @@ module.exports = {
   TRAP_TYPES,
   TRAP_TYPE_KEYS,
 
-  // Events, NPCs & Floor Modifiers
+  // Events, NPCs, Corpses & Floor Modifiers
   SPECIAL_EVENTS,
   DUNGEON_NPCS,
+  DUNGEON_CORPSES,
   FLOOR_MODIFIERS,
   selectFloorModifier,
 
@@ -5758,4 +6119,12 @@ module.exports = {
   STRUCTURE_TYPES,
   STRUCTURE_ENEMY_POOLS,
   generateStructureFloor,
+
+  // Mini-Rift system
+  MINI_RIFT_SEED_PREFIX,
+  MINI_RIFT_TIER_TABLE,
+  MINI_RIFT_BOSS_REWARDS,
+  getMiniRiftTier,
+  getMiniRiftBossRewards,
+  generateMiniRiftFloor,
 };

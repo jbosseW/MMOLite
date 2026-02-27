@@ -15,8 +15,7 @@ local function debugLog(msg)
     table.insert(_debugLines, line)
     -- Append to log file via love.filesystem (works in fused exe)
     pcall(function()
-        local existing = love.filesystem.read("debug.log") or ""
-        love.filesystem.write("debug.log", existing .. line .. "\n")
+        love.filesystem.append("debug.log", line .. "\n")
     end)
 end
 
@@ -107,6 +106,17 @@ local ui = {
     showKnowledge = false,
     -- Equipment panel state (B1)
     showEquipment = false,
+    -- Farming panel state
+    showFarming = false,
+    farmingTab = "crops",  -- "crops", "animals", "build"
+    farmCrops = {},        -- crops from server
+    farmAnimals = {},      -- animals from server
+    farmingPlotId = nil,   -- selected crop plot for planting
+    farmingScroll = 0,
+    -- Base raid state
+    baseRaidAlert = nil,   -- { plotZoneId, message, alertDuration, receivedAt }
+    baseRaidWaves = {},    -- raid wave data
+    baseRaidEnded = nil,   -- { result, message, rewards }
     equipmentScroll = 0,
     -- Items tab filter (B2)
     inventoryItemFilter = "all",   -- "all", "equipment", "consumable", "material"
@@ -204,6 +214,9 @@ local inventoryItemButtons = {}   -- populated each frame in drawItemsTab
 local craftingButtons = {}        -- populated each frame in drawCraftingTab
 
 local placedObjects = {}  -- from server
+local miniRifts = {}      -- riftId -> rift data from server (mini-rifts on overworld)
+local riftDestroyVfx = {} -- { worldX, worldY, timer, maxTimer } for destruction implosion
+local riftRewardPopup = nil -- { rewards, timer, maxTimer } for sealed-rift reward overlay
 
 -- Procedural item UI state (stored on game table to avoid upvalue overflow)
 game._itemUI = {
@@ -253,6 +266,7 @@ local overworld = {
     featureColors = {},     -- feature type -> {r, g, b}
     featureSpeeds = {},     -- feature type -> speed multiplier (-1 = biome speed)
     hoverCave = nil,        -- cave entrance we're near
+    hoverRift = nil,        -- mini-rift we're near (for E interaction)
     rivers = {},            -- river definitions for world map rendering
     riverAnimTimer = 0,     -- animation timer for river flow
     isHollowEarth = false,  -- true when in Hollow Earth zone
@@ -352,6 +366,12 @@ local partyInviteInput = ""     -- text input for inviting by username
 local partyInviteActive = false -- true when invite input is focused
 
 local hoverNpc = nil            -- NPC we're near in town (guild master etc)
+
+-- NPC Dialogue state
+local npcDialogue = { show = false, npcName = "", text = "", choices = {}, npcId = "" }
+
+-- Quest log state
+local questLog = { active = {}, completed = {} }
 
 -- NPC Shop state
 local npcShop = {
@@ -482,14 +502,14 @@ local DTILE = {
     WALL = 0, FLOOR = 1, CORRIDOR = 2, DOOR = 3,
     STAIRS_UP = 4, STAIRS_DOWN = 5, ENTRANCE = 6, EXIT = 7,
     CHEST = 8, TRAP = 9, CAMP_SPOT = 10, SHRINE = 11,
-    BOSS_DOOR = 12, SHORTCUT = 13,
+    BOSS_DOOR = 12, SHORTCUT = 13, CORPSE = 14,
 }
 
 -- Walkable dungeon tiles
 local WALKABLE_TILES = {
     [1] = true, [2] = true, [3] = true, [4] = true, [5] = true,
     [6] = true, [7] = true, [8] = true, [9] = true, [10] = true,
-    [11] = true, [12] = true, [13] = true,
+    [11] = true, [12] = true, [13] = true, [14] = true,
 }
 
 -- RPG Character Data (grouped to reduce upvalues)
@@ -511,6 +531,55 @@ local rpg = {
     mount = nil,             -- current mount type
     equipment = {},          -- { axe, pickaxe, weapon, shield, head, body, accessory }
 }
+
+-- Compute sprint bonuses from race, stats, and equipped cards
+local function computeSprintBonuses()
+    local maxMult = 1.0
+    local drainMult = 1.0
+    local regenMult = 1.0
+
+    -- Race bonuses
+    local race = rpg.race or ""
+    if race == "orc" then maxMult = maxMult + 0.25
+    elseif race == "cat_folk" then drainMult = drainMult - 0.20; regenMult = regenMult + 0.30
+    elseif race == "goblin" then regenMult = regenMult + 0.50
+    elseif race == "dwarf" then maxMult = maxMult + 0.10; drainMult = drainMult + 0.15; regenMult = regenMult - 0.10
+    elseif race == "elf" then maxMult = maxMult - 0.10; drainMult = drainMult - 0.15
+    elseif race == "gnome" then maxMult = maxMult - 0.15; regenMult = regenMult + 0.20
+    end
+
+    -- Stat scaling: Vigor +2% max per point above 5, Finesse -1.5% drain per point above 5
+    local vigor = (rpg.stats and rpg.stats.vigor) or 5
+    local finesse = (rpg.stats and rpg.stats.finesse) or 5
+    maxMult = maxMult + math.max(0, (vigor - 5) * 0.02)
+    drainMult = drainMult - math.max(0, (finesse - 5) * 0.015)
+
+    -- Card effects
+    if rpg.equippedCards and rpg.cards then
+        local cardLookup = {}
+        for _, c in ipairs(rpg.cards) do
+            if c and c.instanceId then cardLookup[c.instanceId] = c end
+        end
+        for _, eqId in ipairs(rpg.equippedCards) do
+            local card = eqId and cardLookup[eqId]
+            if card and card.effects then
+                for _, eff in ipairs(card.effects) do
+                    if eff.type == "sprint_max_bonus" then maxMult = maxMult + (eff.value or 0)
+                    elseif eff.type == "sprint_regen_bonus" then regenMult = regenMult + (eff.value or 0)
+                    elseif eff.type == "sprint_drain_reduction" then drainMult = drainMult - (eff.value or 0)
+                    end
+                end
+            end
+        end
+    end
+
+    return {
+        max = math.floor(sprint.MAX * math.max(0.5, maxMult)),
+        drain = sprint.DRAIN * math.max(0.2, drainMult),
+        restRegen = sprint.REST_REGEN * math.max(0.5, regenMult),
+        walkRegen = sprint.WALK_REGEN * math.max(0.5, regenMult),
+    }
+end
 
 -- Stat allocation [+] button hit rects (rebuilt each frame in drawCharSheet)
 local statAllocButtons = {}  -- { { key="vigor", x, y, w, h }, ... }
@@ -596,6 +665,10 @@ function game.load()
     ui.contextMenu = nil
     placedObjects = {}
     hoverObject = nil
+    miniRifts = {}
+    riftDestroyVfx = {}
+    riftRewardPopup = nil
+    overworld.hoverRift = nil
     overworld.chunks = {}
     overworld.chunkBased = false
     overworld.currentBiome = nil
@@ -643,6 +716,7 @@ function game.load()
     dungeon.chests = {}
     dungeon.traps = {}
     dungeon.npcs = {}
+    dungeon.corpses = {}
     dungeon.camps = {}
     dungeon.theme = nil
     dungeon.themeColor = nil
@@ -721,6 +795,7 @@ function game.load()
         rpg.level = account.level or 1
         rpg.xp = account.xp or 0
         rpg.equipment = account.equipment or {}
+        rpg.ascensionMark = account.ascensionMark or false
     end
 
     -- Cache static gameData from identity (sent once on connect, no longer in zone_state)
@@ -795,6 +870,8 @@ function game.closeAllPanels()
     ui.showPartyPanel = false
     ui.showKnowledge = false
     ui.showEquipment = false
+    ui.showFarming = false
+    ui.farmingPlotId = nil
     ui.equipmentScroll = 0
     ui.selectedCard = nil
     partyInviteActive = false
@@ -843,6 +920,7 @@ function game.setupListeners()
         "portal_list", "portal_traveled", "portal_error",
         "dungeon_floor_state", "dungeon_player_moved", "dungeon_combat_result",
         "dungeon_chest_result", "dungeon_trap_triggered", "dungeon_npc_result",
+        "dungeon_corpse_examined", "dungeon_corpse_result",
         "dungeon_camp_placed", "dungeon_camp_result", "dungeon_camp_ambush",
         "dungeon_guild_result", "dungeon_quest_list_result", "dungeon_quest_complete_result",
         "dungeon_leaderboard_result", "dungeon_enemy_updated", "dungeon_player_died",
@@ -879,6 +957,8 @@ function game.setupListeners()
         "leviathan_phase_change", "leviathan_enrage",
         "leviathan_flee_success", "leviathan_flee_failed",
         "leviathan_info_result",
+        -- NPC Dialogue events
+        "npc_dialogue", "npc_dialogue_end",
         -- NPC Shop events
         "npc_shop_list", "npc_shop_prices_result", "npc_shop_bought",
         "npc_shop_sold", "npc_shop_error",
@@ -886,6 +966,10 @@ function game.setupListeners()
         "trade_request_received", "trade_request_sent", "trade_started",
         "trade_offer_updated", "trade_partner_confirmed", "trade_completed",
         "trade_cancelled", "trade_expired", "trade_error",
+        -- Quest events
+        "quest_accepted", "quest_progress", "quest_turnin_result", "quest_list_result",
+        -- Monster capture/evolve events
+        "monster_capture_result", "monster_evolve_result",
         -- Overworld Monster events
         "zone_monsters", "zone_monster_spawned", "zone_monster_died",
         "zone_monster_hit", "zone_monster_attack", "zone_monster_killed", "zone_monster_positions",
@@ -903,6 +987,13 @@ function game.setupListeners()
         "corruption_cleanse_result", "corruption_card_cleanse_result",
         "tc_boss_phase_change", "tc_units_spawned", "tc_corruption_zones",
         "tc_boss_soul_harvest", "tc_boss_attack",
+        -- Farming events
+        "seed_planted", "crop_watered", "crop_harvested", "crop_cleared",
+        "crop_status", "farm_update", "farm_error",
+        "animal_bought", "animal_placed", "animals_fed", "products_collected", "animal_named",
+        "furniture_effect",
+        -- Base raid events
+        "base_raid_alert", "raid_wave", "raid_ended",
     }
     for _, evt in ipairs(eventsToClean) do
         client:off(evt)
@@ -1061,6 +1152,8 @@ function game.setupListeners()
                 avatar = data.avatar,
                 targetX = data.x or 0,
                 targetY = data.y or 0,
+                race = data.race,
+                ascensionMark = data.ascensionMark or false,
             }
         end
     end)
@@ -1523,6 +1616,12 @@ function game.setupListeners()
                 end
             end
         end
+        -- Extract mini-rifts from chunk data
+        if data.rifts then
+            for _, r in ipairs(data.rifts) do
+                miniRifts[r.riftId] = r
+            end
+        end
         -- LRU chunk eviction: if too many chunks cached, evict distant ones
         local MAX_CHUNKS = 200
         local EVICT_RADIUS_SQ = (8 * (overworld.chunkSize or 512)) ^ 2
@@ -1627,6 +1726,49 @@ function game.setupListeners()
         end
     end)
 
+    -- Mini-Rift events
+    client:on("rift_spawned", function(data)
+        if data and data.riftId then
+            miniRifts[data.riftId] = data
+        end
+    end)
+
+    client:on("rift_destroyed", function(data)
+        if data and data.riftId then
+            local rift = miniRifts[data.riftId]
+            if rift then
+                -- Trigger destruction implosion VFX at the rift position
+                table.insert(riftDestroyVfx, {
+                    worldX = rift.worldX,
+                    worldY = rift.worldY,
+                    timer = 1.5,
+                    maxTimer = 1.5,
+                })
+            end
+            miniRifts[data.riftId] = nil
+        end
+    end)
+
+    client:on("rift_sealed_rewards", function(data)
+        if data then
+            riftRewardPopup = {
+                rewards = data,
+                timer = 5.0,
+                maxTimer = 5.0,
+            }
+            -- Also add floating text at player position
+            local me = players[myId]
+            if me then
+                addFloatingText({
+                    text = "Rift Sealed!",
+                    x = me.x, y = me.y - 60,
+                    color = {0.8, 0.5, 1},
+                    timer = 3,
+                })
+            end
+        end
+    end)
+
     -- Plot zone connection events
     client:on("connection_added", function(data)
         if data and connections then
@@ -1701,6 +1843,7 @@ function game.setupListeners()
             rpg.xpNeeded = data.xpNeeded or 250
             rpg.cardSlots = data.cardSlots or 4
             rpg.pendingPacks = data.pendingPacks or 0
+            rpg.ascensionMark = data.ascensionMark or false
             if data.skills then skills = data.skills end
         end
     end)
@@ -1933,6 +2076,7 @@ function game.setupListeners()
         dungeon.chests = data.chests or {}
         dungeon.traps = data.traps or {}
         dungeon.npcs = data.npcs or {}
+        dungeon.corpses = data.corpses or {}
         dungeon.camps = data.camps or {}
         dungeon.theme = data.theme
         dungeon.themeColor = data.themeColor
@@ -2294,6 +2438,80 @@ function game.setupListeners()
             end
         end
         if data.inventory then mmoInventory = data.inventory end
+    end)
+
+    -- Dungeon: corpse examined broadcast (by any player)
+    client:on("dungeon_corpse_examined", function(data)
+        if not data then return end
+        for _, cr in ipairs(dungeon.corpses) do
+            if cr.x == data.x and cr.y == data.y then
+                cr.examined = true
+                break
+            end
+        end
+    end)
+
+    -- Dungeon: corpse examine result (loot for this player)
+    client:on("dungeon_corpse_result", function(data)
+        if not data then return end
+        local cx = (data.x or 0) * 32 + 16
+        local cy = (data.y or 0) * 32
+        -- Show name/description
+        if data.name then
+            addFloatingText({
+                text = data.name,
+                x = cx, y = cy - 30,
+                color = {0.7, 0.65, 0.55},
+                timer = 3,
+            })
+        end
+        if data.gold and data.gold > 0 then
+            addFloatingText({
+                text = "+" .. data.gold .. " gold",
+                x = cx, y = cy - 10,
+                color = {1, 0.85, 0.2},
+                timer = 2,
+            })
+        end
+        if data.resource and data.resourceAmount and data.resourceAmount > 0 then
+            addFloatingText({
+                text = "+" .. data.resourceAmount .. " " .. data.resource,
+                x = cx, y = cy - 26,
+                color = {0.4, 1, 0.4},
+                timer = 2,
+            })
+        end
+        if data.hasCard then
+            addFloatingText({
+                text = "Card pack found!",
+                x = cx, y = cy - 42,
+                color = {0.9, 0.5, 1},
+                timer = 2.5,
+            })
+        end
+        if data.bookFound then
+            addFloatingText({
+                text = "Book discovered!",
+                x = cx, y = cy - 58,
+                color = {1, 0.9, 0.6},
+                timer = 3,
+            })
+        end
+        if data.xp and data.xp > 0 then
+            addFloatingText({
+                text = "+" .. data.xp .. " delving XP",
+                x = cx, y = cy + 6,
+                color = {0.5, 0.8, 1},
+                timer = 2,
+            })
+        end
+        -- Mark corpse examined locally
+        for _, cr in ipairs(dungeon.corpses) do
+            if cr.x == data.x and cr.y == data.y then
+                cr.examined = true
+                break
+            end
+        end
     end)
 
     -- Dungeon: trap triggered
@@ -2735,6 +2953,7 @@ function game.setupListeners()
             dungeon.fog = {}
             dungeon.enemies = {}
             dungeon.chests = {}
+            dungeon.corpses = {}
             dungeon.traps = {}
             -- Reveal all tiles (no fog of war in overworld combat)
             dungeon.fogWidth = #(data.arenaGrid[1] or {})
@@ -2857,6 +3076,7 @@ function game.setupListeners()
             dungeon.fog = {}
             dungeon.enemies = {}
             dungeon.chests = {}
+            dungeon.corpses = {}
             dungeon.traps = {}
             -- Camera will snap back to player on next frame via normal follow logic
             tcState.overworldCombat_savedPos = nil
@@ -2939,6 +3159,8 @@ function game.setupListeners()
             if data.buff then msg = msg .. " | " .. (data.buff.stat or "") .. " +" .. (data.buff.value or 0) end
             addFloatingText({ text = msg, x = me.x, y = me.y - 40, color = {0.3, 1, 0.3}, timer = 2.5 })
         end
+        -- Restore sprint stamina from food
+        sprint.stamina = math.min(sprint.MAX, sprint.stamina + sprint.FOOD_RESTORE)
     end)
 
     -- B4: Food error response
@@ -3991,6 +4213,93 @@ function game.setupListeners()
     end)
 
     -- ========================================================================
+    -- NPC Dialogue event listeners
+    -- ========================================================================
+
+    client:on("npc_dialogue", function(data)
+        if not data then return end
+        npcDialogue.show = true
+        npcDialogue.npcName = data.npcName or "NPC"
+        npcDialogue.text = data.text or "..."
+        npcDialogue.choices = data.choices or {}
+        npcDialogue.npcId = data.npcId or ""
+    end)
+
+    client:on("npc_dialogue_end", function(data)
+        npcDialogue.show = false
+        npcDialogue.text = ""
+        npcDialogue.choices = {}
+    end)
+
+    -- ========================================================================
+    -- Quest event listeners
+    -- ========================================================================
+
+    client:on("quest_accepted", function(data)
+        if not data then return end
+        local me = players[myId]
+        if me then
+            addFloatingText({ text = "Quest Accepted: " .. (data.name or data.questId), x = me.x, y = me.y - 60, color = {0.3, 1, 0.6}, timer = 3 })
+        end
+    end)
+
+    client:on("quest_progress", function(data)
+        if not data then return end
+        local me = players[myId]
+        if me then
+            local msg = "Quest: " .. data.questId .. " (" .. data.progress .. "/" .. data.targetCount .. ")"
+            if data.complete then msg = msg .. " COMPLETE!" end
+            addFloatingText({ text = msg, x = me.x, y = me.y - 60, color = data.complete and {1, 0.85, 0.2} or {0.7, 0.8, 1}, timer = 2.5 })
+        end
+    end)
+
+    client:on("quest_turnin_result", function(data)
+        if not data then return end
+        local me = players[myId]
+        if me then
+            if data.success and data.rewards then
+                local msg = "Quest Complete!"
+                if data.rewards.coins then msg = msg .. " +" .. data.rewards.coins .. " coins" end
+                if data.rewards.xp then msg = msg .. " +" .. data.rewards.xp .. " XP" end
+                addFloatingText({ text = msg, x = me.x, y = me.y - 60, color = {1, 0.85, 0.2}, timer = 3 })
+            end
+        end
+    end)
+
+    client:on("quest_list_result", function(data)
+        if not data then return end
+        questLog = { active = data.active or {}, completed = data.completed or {} }
+    end)
+
+    -- ========================================================================
+    -- Monster capture/evolve event listeners
+    -- ========================================================================
+
+    client:on("monster_capture_result", function(data)
+        if not data then return end
+        local me = players[myId]
+        if me then
+            if data.success then
+                addFloatingText({ text = data.message or "Captured!", x = me.x, y = me.y - 60, color = {0.3, 1, 0.3}, timer = 3 })
+            else
+                addFloatingText({ text = data.message or "Capture failed!", x = me.x, y = me.y - 60, color = {1, 0.4, 0.4}, timer = 2.5 })
+            end
+        end
+    end)
+
+    client:on("monster_evolve_result", function(data)
+        if not data then return end
+        local me = players[myId]
+        if me then
+            if data.success then
+                addFloatingText({ text = (data.oldName or "Monster") .. " evolved into " .. (data.newName or "???") .. "!", x = me.x, y = me.y - 60, color = {1, 0.85, 0.2}, timer = 3 })
+            else
+                addFloatingText({ text = data.message or "Evolution failed!", x = me.x, y = me.y - 60, color = {1, 0.4, 0.4}, timer = 2.5 })
+            end
+        end
+    end)
+
+    -- ========================================================================
     -- P2P Trade event listeners
     -- ========================================================================
 
@@ -4365,6 +4674,120 @@ function game.setupListeners()
             timer = 4,
         })
     end)
+
+    -- -----------------------------------------------------------------------
+    -- Farming system listeners
+    -- -----------------------------------------------------------------------
+    client:on("seed_planted", function(data)
+        if not data then return end
+        addChatMessage("[Farming] Planted " .. (data.seedType or "seed"):gsub("_", " "), {0.4, 0.8, 0.3})
+        if data.inventory then inventory = data.inventory end
+    end)
+
+    client:on("crop_watered", function(data)
+        if not data then return end
+        addChatMessage("[Farming] Crop watered", {0.3, 0.7, 0.9})
+    end)
+
+    client:on("crop_harvested", function(data)
+        if not data then return end
+        local msg = "[Farming] Harvested " .. (data.amount or 1) .. "x " .. (data.output or "crop"):gsub("_", " ")
+        if data.seedBack then msg = msg .. " (+1 seed back!)" end
+        addChatMessage(msg, {0.4, 0.9, 0.3})
+        if data.inventory then inventory = data.inventory end
+    end)
+
+    client:on("crop_cleared", function(data)
+        if not data then return end
+        addChatMessage("[Farming] " .. (data.message or "Crop cleared"), {0.6, 0.6, 0.4})
+    end)
+
+    client:on("crop_status", function(data)
+        if not data then return end
+        ui.farmCrops = data.crops or {}
+        ui.farmAnimals = data.animals or {}
+    end)
+
+    client:on("farm_update", function(data)
+        if not data then return end
+        if data.crops then ui.farmCrops = data.crops end
+        if data.animals then ui.farmAnimals = data.animals end
+    end)
+
+    client:on("farm_error", function(data)
+        if not data then return end
+        addChatMessage("[Farming] " .. (data.message or "Error"), {0.9, 0.3, 0.3})
+    end)
+
+    client:on("animal_bought", function(data)
+        if not data then return end
+        addChatMessage("[Farming] Bought " .. (data.animal and data.animal.name or "animal"), {0.4, 0.8, 0.3})
+    end)
+
+    client:on("animal_placed", function(data)
+        if not data then return end
+        addChatMessage("[Farming] Animal placed in pen", {0.4, 0.8, 0.3})
+    end)
+
+    client:on("animals_fed", function(data)
+        if not data then return end
+        addChatMessage("[Farming] Animals fed!", {0.4, 0.8, 0.3})
+        if data.inventory then inventory = data.inventory end
+    end)
+
+    client:on("products_collected", function(data)
+        if not data then return end
+        local items = {}
+        if data.collected then
+            for k, v in pairs(data.collected) do
+                table.insert(items, v .. "x " .. k:gsub("_", " "))
+            end
+        end
+        addChatMessage("[Farming] Collected: " .. table.concat(items, ", "), {0.4, 0.9, 0.3})
+        if data.inventory then inventory = data.inventory end
+    end)
+
+    client:on("animal_named", function(data)
+        if not data then return end
+        addChatMessage("[Farming] Animal renamed to " .. (data.name or ""), {0.5, 0.7, 0.9})
+    end)
+
+    client:on("furniture_effect", function(data)
+        if not data then return end
+        addChatMessage("[Home] " .. (data.message or "Effect applied"), {0.6, 0.8, 1.0})
+    end)
+
+    -- -----------------------------------------------------------------------
+    -- Base raid listeners
+    -- -----------------------------------------------------------------------
+    client:on("base_raid_alert", function(data)
+        if not data then return end
+        ui.baseRaidAlert = {
+            plotZoneId = data.plotZoneId,
+            message = data.message or "Your base is under attack!",
+            alertDuration = data.alertDuration or 60000,
+            receivedAt = love.timer.getTime(),
+        }
+        addChatMessage("[RAID ALERT] " .. (data.message or "Your base is under threat!"), {1.0, 0.2, 0.2})
+    end)
+
+    client:on("raid_wave", function(data)
+        if not data then return end
+        ui.baseRaidWaves = data.enemies or {}
+        addChatMessage("[RAID] " .. (data.message or "Wave incoming!"), {1.0, 0.4, 0.2})
+    end)
+
+    client:on("raid_ended", function(data)
+        if not data then return end
+        ui.baseRaidEnded = data
+        ui.baseRaidAlert = nil
+        ui.baseRaidWaves = {}
+        if data.result == "victory" then
+            addChatMessage("[RAID] Victory! " .. (data.message or ""), {0.3, 1.0, 0.3})
+        else
+            addChatMessage("[RAID] " .. (data.message or "Defeat"), {1.0, 0.3, 0.3})
+        end
+    end)
 end
 
 -- Helper: get feature type at world pixel coords
@@ -4387,6 +4810,8 @@ end
 local WATER_MOUNT_TYPES = { raft = true, boat = true, ship = true, sea_mount = true, airship = true, flying_mount = true }
 -- Speed multipliers for water mounts on water tiles
 local WATER_MOUNT_SPEED = { raft = 0.5, boat = 0.8, ship = 1.5, sea_mount = 1.0, airship = 1.0, flying_mount = 1.0 }
+-- Land mount speed multipliers (applied to base walk speed on land tiles)
+local LAND_MOUNT_SPEED = { horse = 2.0, caravan = 0.7 }
 
 -- Helper: check if position is near a placed bridge or raft object
 function game.isNearPlacedBridge(wx, wy)
@@ -4477,6 +4902,22 @@ function game.update(dt)
         purificationVfx.radius = progress * 300  -- expand to 300px radius
         if purificationVfx.timer <= 0 then
             purificationVfx = nil
+        end
+    end
+
+    -- Rift destruction VFX update
+    for i = #riftDestroyVfx, 1, -1 do
+        riftDestroyVfx[i].timer = riftDestroyVfx[i].timer - dt
+        if riftDestroyVfx[i].timer <= 0 then
+            table.remove(riftDestroyVfx, i)
+        end
+    end
+
+    -- Rift reward popup update
+    if riftRewardPopup then
+        riftRewardPopup.timer = riftRewardPopup.timer - dt
+        if riftRewardPopup.timer <= 0 then
+            riftRewardPopup = nil
         end
     end
 
@@ -4930,7 +5371,13 @@ function game.update(dt)
                     end
                 end
 
+                -- Apply land mount speed multiplier on overworld
+                if overworld.chunkBased and rpg.mount and LAND_MOUNT_SPEED[rpg.mount] then
+                    speed = speed * LAND_MOUNT_SPEED[rpg.mount]
+                end
+
                 -- Sprint / exhaustion speed modifier (towns/buildings only, not overworld)
+                local sprintBonus = computeSprintBonuses()
                 sprint.isSprinting = false
                 if not overworld.chunkBased then
                     if sprint.isExhausted then
@@ -4938,15 +5385,24 @@ function game.update(dt)
                     elseif love.keyboard.isDown("lshift", "rshift") and sprint.stamina > 0 and not chat.active then
                         sprint.isSprinting = true
                         speed = speed * sprint.MULTIPLIER
-                        sprint.stamina = math.max(0, sprint.stamina - sprint.DRAIN * dt)
+                        sprint.stamina = math.max(0, sprint.stamina - sprintBonus.drain * dt)
                         if sprint.stamina <= 0 then
                             sprint.isExhausted = true
                         end
                     else
                         -- Slow regen while walking (not sprinting)
-                        sprint.stamina = math.min(sprint.MAX, sprint.stamina + sprint.WALK_REGEN * dt)
+                        sprint.stamina = math.min(sprintBonus.max, sprint.stamina + sprintBonus.walkRegen * dt)
                     end
                 end
+
+                -- Weather movement speed modifier
+                local weatherSpeed = 1.0
+                if world.weather == "storm" then weatherSpeed = 0.85
+                elseif world.weather == "snow" then weatherSpeed = 0.80
+                elseif world.weather == "fog" then weatherSpeed = 0.95
+                elseif world.weather == "rain" then weatherSpeed = 0.95
+                end
+                speed = speed * weatherSpeed
 
                 local newX = me.x + dx * speed * dt
                 local newY = me.y + dy * speed * dt
@@ -4999,20 +5455,25 @@ function game.update(dt)
             -- Standing still: rest recovery
             sprint.restTimer = sprint.restTimer + dt
             if sprint.restTimer >= 1.0 then
-                sprint.stamina = math.min(sprint.MAX, sprint.stamina + sprint.REST_REGEN * dt)
+                local sb = computeSprintBonuses()
+                sprint.stamina = math.min(sb.max, sprint.stamina + sb.restRegen * dt)
             end
         end
     else
         -- Standing still: rest recovery
         sprint.restTimer = sprint.restTimer + dt
         if sprint.restTimer >= 1.0 then
-            sprint.stamina = math.min(sprint.MAX, sprint.stamina + sprint.REST_REGEN * dt)
+            local sb = computeSprintBonuses()
+            sprint.stamina = math.min(sb.max, sprint.stamina + sb.restRegen * dt)
         end
     end
 
     -- Exit exhaustion when stamina recovers above 25%
-    if sprint.isExhausted and sprint.stamina >= sprint.MAX * 0.25 then
-        sprint.isExhausted = false
+    do
+        local sb = computeSprintBonuses()
+        if sprint.isExhausted and sprint.stamina >= sb.max * 0.25 then
+            sprint.isExhausted = false
+        end
     end
 
     -- Hold E to continuously harvest (blocked during combat)
@@ -5195,6 +5656,22 @@ function game.update(dt)
                             end
                         end
                     end
+                end
+            end
+        end
+    end
+
+    -- Check mini-rift proximity
+    overworld.hoverRift = nil
+    if overworld.chunkBased and me then
+        for _, rift in pairs(miniRifts) do
+            if not rift.cleared then
+                local rdx = me.x - rift.worldX
+                local rdy = me.y - rift.worldY
+                local rdist = math.sqrt(rdx * rdx + rdy * rdy)
+                if rdist < 200 then
+                    overworld.hoverRift = rift
+                    break
                 end
             end
         end
@@ -5470,6 +5947,11 @@ function game.draw()
     -- Draw placed objects
     game.drawPlacedObjects()
 
+    -- Draw mini-rifts on overworld (world space)
+    if overworld.chunkBased then
+        game.drawMiniRifts()
+    end
+
     -- Draw placement ghost (if in placement mode)
     if ui.placementMode and ui.placementType then
         local mx, my = love.mouse.getPosition()
@@ -5656,6 +6138,9 @@ function game.draw()
     -- Weather overlay
     game.drawWeather(W, H)
 
+    -- NPC Dialogue panel
+    game.drawDialoguePanel(W, H)
+
     -- Lich Corruption damage flash (purple vignette)
     if corruption.damageFlash > 0 then
         local cf = corruption.damageFlash
@@ -5697,6 +6182,69 @@ function game.draw()
         end
     end
 
+    -- Rift sealed reward popup (screen space, center overlay)
+    if riftRewardPopup then
+        local rp = riftRewardPopup
+        local rewards = rp.rewards or {}
+        local fadeProgress = math.min(1, (rp.maxTimer - rp.timer) / 0.3)  -- fade in over 0.3s
+        local fadeOut = math.min(1, rp.timer / 0.5)  -- fade out over last 0.5s
+        local alpha = math.min(fadeProgress, fadeOut)
+
+        local panelW = 320
+        local panelH = 180
+        local px = (W - panelW) / 2
+        local py = (H - panelH) / 2 - 40
+
+        -- Background panel
+        love.graphics.setColor(0.05, 0.02, 0.1, 0.88 * alpha)
+        love.graphics.rectangle("fill", px, py, panelW, panelH, 8, 8)
+        love.graphics.setColor(0.6, 0.25, 0.9, 0.7 * alpha)
+        love.graphics.setLineWidth(2)
+        love.graphics.rectangle("line", px, py, panelW, panelH, 8, 8)
+        love.graphics.setLineWidth(1)
+
+        -- Title
+        love.graphics.setFont(fonts.ui)
+        love.graphics.setColor(0.8, 0.5, 1, alpha)
+        love.graphics.printf("Rift Sealed!", px, py + 10, panelW, "center")
+
+        -- Reward lines
+        love.graphics.setFont(fonts.npc)
+        local ly = py + 38
+        local lineH = 18
+
+        if rewards.gold and rewards.gold > 0 then
+            love.graphics.setColor(1, 0.85, 0.2, alpha)
+            love.graphics.printf("+" .. rewards.gold .. " Gold", px + 10, ly, panelW - 20, "center")
+            ly = ly + lineH
+        end
+        if rewards.xp and rewards.xp > 0 then
+            love.graphics.setColor(0.3, 0.9, 1, alpha)
+            love.graphics.printf("+" .. rewards.xp .. " XP", px + 10, ly, panelW - 20, "center")
+            ly = ly + lineH
+        end
+        if rewards.crystals and rewards.crystals > 0 then
+            love.graphics.setColor(0.7, 0.4, 1, alpha)
+            love.graphics.printf("+" .. rewards.crystals .. " Mana Crystals", px + 10, ly, panelW - 20, "center")
+            ly = ly + lineH
+        end
+        if rewards.cardPacks and rewards.cardPacks > 0 then
+            love.graphics.setColor(1, 0.7, 0.3, alpha)
+            love.graphics.printf("+" .. rewards.cardPacks .. " Card Pack(s)", px + 10, ly, panelW - 20, "center")
+            ly = ly + lineH
+        end
+        -- Generic items list
+        if rewards.items then
+            for _, item in ipairs(rewards.items) do
+                love.graphics.setColor(0.8, 0.8, 0.8, alpha)
+                local iName = item.name or item.type or "Item"
+                local iQty = item.quantity or 1
+                love.graphics.printf("+" .. iQty .. " " .. iName, px + 10, ly, panelW - 20, "center")
+                ly = ly + lineH
+            end
+        end
+    end
+
     -- HUD
     game.drawHUD(W, H)
 
@@ -5727,6 +6275,11 @@ function game.draw()
     -- Knowledge panel overlay
     if ui.showKnowledge then
         game.drawKnowledgePanel(W, H)
+    end
+
+    -- Farming panel overlay
+    if ui.showFarming then
+        game.drawFarmingPanel(W, H)
     end
 
     -- Knowledge notifications (book/term discovery popups)
@@ -5840,6 +6393,39 @@ function game.draw()
         local label = hoverObject.type:gsub("_", " ")
         love.graphics.setColor(0.5, 1, 0.5, fadeIn * (0.7 + math.sin(love.timer.getTime() * 4) * 0.3))
         love.graphics.printf("Press E to use " .. label, 0, H / 2 - 80, W, "center")
+    end
+
+    -- Mini-rift interaction prompt
+    if overworld.hoverRift and not hoverConnection and not hoverResource and not hoverObject and not ui.showInventory then
+        local rift = overworld.hoverRift
+        local riftName = rift.name or "Rift"
+        local tierNum = rift.tier or 1
+        local floors = rift.totalFloors or "?"
+        local prompt = "Press E to enter " .. riftName .. " (Tier " .. tierNum .. ", " .. floors .. " floors)"
+
+        -- Pulsing purple text
+        local promptAlpha = 0.7 + math.sin(love.timer.getTime() * 4) * 0.3
+        love.graphics.setFont(fonts.ui)
+        love.graphics.setColor(0.7, 0.3, 1, fadeIn * promptAlpha)
+        love.graphics.printf(prompt, 0, H / 2 - 80, W, "center")
+
+        -- Difficulty subtitle
+        local diffKey = rift.difficulty or "medium"
+        local DIFF_LABELS = { easy = "Easy", medium = "Medium", hard = "Hard", extreme = "Extreme" }
+        local DIFF_COLORS_HUD = {
+            easy    = {0.2, 0.9, 0.3},
+            medium  = {1.0, 0.9, 0.2},
+            hard    = {1.0, 0.55, 0.1},
+            extreme = {1.0, 0.15, 0.15},
+        }
+        local dc = DIFF_COLORS_HUD[diffKey] or DIFF_COLORS_HUD.medium
+        local subtitle = "Difficulty: " .. (DIFF_LABELS[diffKey] or "Unknown")
+        if rift.minPlayerLevel and rift.minPlayerLevel > 1 then
+            subtitle = subtitle .. "  |  Min Level: " .. rift.minPlayerLevel
+        end
+        love.graphics.setFont(fonts.npc)
+        love.graphics.setColor(dc[1], dc[2], dc[3], fadeIn * 0.8)
+        love.graphics.printf(subtitle, 0, H / 2 - 58, W, "center")
     end
 
     -- Cave interaction prompt
@@ -7037,6 +7623,117 @@ function game.drawPlacedObjects()
             love.graphics.setColor(0.65, 0.50, 0.30, 0.7)
             love.graphics.rectangle("fill", obj.x - 28, obj.y - 16, 56, 3, 1, 1)
             love.graphics.rectangle("fill", obj.x - 28, obj.y + 13, 56, 3, 1, 1)
+        elseif obj.type == "stone_wall" then
+            love.graphics.setColor(0.5, 0.5, 0.5, 0.9)
+            love.graphics.rectangle("fill", obj.x - 16, obj.y - 16, 32, 32, 2, 2)
+            love.graphics.setColor(0.4, 0.4, 0.4, 0.6)
+            love.graphics.line(obj.x - 16, obj.y - 5, obj.x + 16, obj.y - 5)
+            love.graphics.line(obj.x - 16, obj.y + 5, obj.x + 16, obj.y + 5)
+        elseif obj.type == "fence" or obj.type == "stone_fence" or obj.type == "iron_fence" then
+            local c = obj.type == "fence" and {0.5, 0.35, 0.2} or obj.type == "stone_fence" and {0.5, 0.5, 0.5} or {0.4, 0.4, 0.5}
+            love.graphics.setColor(c[1], c[2], c[3], 0.9)
+            love.graphics.rectangle("fill", obj.x - 16, obj.y - 2, 32, 4, 1, 1)
+            love.graphics.rectangle("fill", obj.x - 12, obj.y - 10, 3, 12)
+            love.graphics.rectangle("fill", obj.x + 9, obj.y - 10, 3, 12)
+        elseif obj.type == "crop_plot" or obj.type == "garden_bed" then
+            -- Brown soil
+            love.graphics.setColor(0.35, 0.25, 0.1, 0.9)
+            love.graphics.rectangle("fill", obj.x - 20, obj.y - 20, 40, 40, 2, 2)
+            -- Furrows
+            love.graphics.setColor(0.3, 0.2, 0.08, 0.7)
+            for fy = -16, 16, 8 do
+                love.graphics.line(obj.x - 18, obj.y + fy, obj.x + 18, obj.y + fy)
+            end
+            -- Crop growth stages
+            if obj.crop and obj.crop.stage then
+                local stage = obj.crop.stage
+                if stage == 0 then -- seed
+                    love.graphics.setColor(0.5, 0.4, 0.2, 0.6)
+                    love.graphics.circle("fill", obj.x, obj.y, 3)
+                elseif stage == 1 then -- sprout
+                    love.graphics.setColor(0.3, 0.7, 0.2, 0.8)
+                    love.graphics.rectangle("fill", obj.x - 1, obj.y - 6, 2, 6)
+                    love.graphics.circle("fill", obj.x, obj.y - 7, 3)
+                elseif stage == 2 then -- growing
+                    love.graphics.setColor(0.2, 0.7, 0.2, 0.9)
+                    love.graphics.rectangle("fill", obj.x - 2, obj.y - 10, 4, 10)
+                    love.graphics.circle("fill", obj.x, obj.y - 11, 5)
+                    love.graphics.circle("fill", obj.x - 4, obj.y - 8, 3)
+                    love.graphics.circle("fill", obj.x + 4, obj.y - 8, 3)
+                elseif stage == 3 then -- mature
+                    love.graphics.setColor(0.8, 0.7, 0.1, 0.9)
+                    love.graphics.rectangle("fill", obj.x - 2, obj.y - 14, 4, 14)
+                    love.graphics.circle("fill", obj.x, obj.y - 15, 6)
+                    love.graphics.setColor(0.2, 0.6, 0.2, 0.8)
+                    love.graphics.circle("fill", obj.x - 5, obj.y - 10, 4)
+                    love.graphics.circle("fill", obj.x + 5, obj.y - 10, 4)
+                elseif stage == 4 then -- withered
+                    love.graphics.setColor(0.4, 0.3, 0.15, 0.6)
+                    love.graphics.rectangle("fill", obj.x - 1, obj.y - 8, 2, 8)
+                    love.graphics.setColor(0.5, 0.4, 0.2, 0.4)
+                    love.graphics.circle("fill", obj.x, obj.y - 9, 4)
+                end
+            end
+        elseif obj.type == "animal_pen" then
+            love.graphics.setColor(0.5, 0.35, 0.2, 0.8)
+            love.graphics.rectangle("line", obj.x - 24, obj.y - 24, 48, 48, 3, 3)
+            love.graphics.rectangle("line", obj.x - 22, obj.y - 22, 44, 44, 2, 2)
+            -- Gate
+            love.graphics.setColor(0.6, 0.4, 0.2, 0.9)
+            love.graphics.rectangle("fill", obj.x - 6, obj.y + 22, 12, 4)
+        elseif obj.type == "well" then
+            love.graphics.setColor(0.5, 0.5, 0.55, 0.9)
+            love.graphics.circle("fill", obj.x, obj.y, 14)
+            love.graphics.setColor(0.2, 0.4, 0.8, 0.7)
+            love.graphics.circle("fill", obj.x, obj.y, 8)
+        elseif obj.type == "scarecrow" then
+            love.graphics.setColor(0.5, 0.35, 0.2, 0.9)
+            love.graphics.rectangle("fill", obj.x - 1, obj.y - 16, 2, 24)
+            love.graphics.rectangle("fill", obj.x - 10, obj.y - 10, 20, 2)
+            love.graphics.setColor(0.7, 0.6, 0.3, 0.8)
+            love.graphics.circle("fill", obj.x, obj.y - 18, 5)
+        elseif obj.type == "sprinkler" then
+            love.graphics.setColor(0.4, 0.4, 0.5, 0.9)
+            love.graphics.circle("fill", obj.x, obj.y, 6)
+            local t = love.timer.getTime()
+            love.graphics.setColor(0.3, 0.6, 0.9, 0.3 + math.sin(t * 3) * 0.2)
+            love.graphics.circle("line", obj.x, obj.y, 10 + math.sin(t * 2) * 3)
+        elseif obj.type == "lantern" then
+            love.graphics.setColor(0.6, 0.5, 0.2, 0.9)
+            love.graphics.rectangle("fill", obj.x - 4, obj.y - 8, 8, 12, 2, 2)
+            local t = love.timer.getTime()
+            love.graphics.setColor(1, 0.8, 0.3, 0.4 + math.sin(t * 4) * 0.2)
+            love.graphics.circle("fill", obj.x, obj.y - 4, 4)
+        elseif obj.type == "clock" then
+            love.graphics.setColor(0.5, 0.35, 0.2, 0.9)
+            love.graphics.rectangle("fill", obj.x - 8, obj.y - 10, 16, 20, 3, 3)
+            love.graphics.setColor(0.9, 0.85, 0.7, 0.8)
+            love.graphics.circle("fill", obj.x, obj.y - 3, 5)
+        elseif obj.type == "trophy_mount" then
+            love.graphics.setColor(0.5, 0.35, 0.2, 0.9)
+            love.graphics.rectangle("fill", obj.x - 10, obj.y - 6, 20, 12, 2, 2)
+            love.graphics.setColor(0.7, 0.6, 0.4, 0.8)
+            love.graphics.polygon("fill", obj.x, obj.y - 10, obj.x - 6, obj.y - 2, obj.x + 6, obj.y - 2)
+        elseif obj.type == "bed" then
+            love.graphics.setColor(0.5, 0.35, 0.2, 0.9)
+            love.graphics.rectangle("fill", obj.x - 10, obj.y - 14, 20, 28, 3, 3)
+            love.graphics.setColor(0.7, 0.5, 0.5, 0.8)
+            love.graphics.rectangle("fill", obj.x - 8, obj.y - 12, 16, 10, 2, 2)
+        elseif obj.type == "bookshelf" then
+            love.graphics.setColor(0.45, 0.3, 0.15, 0.9)
+            love.graphics.rectangle("fill", obj.x - 12, obj.y - 10, 24, 20, 2, 2)
+            love.graphics.setColor(0.6, 0.2, 0.1, 0.7)
+            love.graphics.rectangle("fill", obj.x - 10, obj.y - 8, 5, 6)
+            love.graphics.setColor(0.2, 0.4, 0.6, 0.7)
+            love.graphics.rectangle("fill", obj.x - 4, obj.y - 8, 5, 6)
+            love.graphics.setColor(0.5, 0.5, 0.2, 0.7)
+            love.graphics.rectangle("fill", obj.x + 2, obj.y - 8, 5, 6)
+        else
+            -- Generic fallback for unrecognized types
+            love.graphics.setColor(0.5, 0.5, 0.5, 0.7)
+            love.graphics.rectangle("fill", obj.x - 12, obj.y - 12, 24, 24, 3, 3)
+            love.graphics.setColor(0.7, 0.7, 0.7, 0.5)
+            love.graphics.rectangle("line", obj.x - 12, obj.y - 12, 24, 24, 3, 3)
         end
 
         -- Label
@@ -7061,6 +7758,183 @@ function game.drawFloatingTexts()
         local a = math.min(1, ft.timer / 0.5)  -- fade out in last 0.5s
         love.graphics.setColor(ft.color[1], ft.color[2], ft.color[3], a * fadeIn)
         love.graphics.printf(ft.text, ft.x - 80, ft.y, 160, "center")
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Mini-Rift overworld rendering: animated void portals
+-- ---------------------------------------------------------------------------
+function game.drawMiniRifts()
+    if not overworld.chunkBased then return end
+    local t = love.timer.getTime()
+    local math_sin = math.sin
+    local math_cos = math.cos
+    local math_pi = math.pi
+
+    -- Spatial culling bounds
+    local cullM = 120
+    local cLeft = camera.x - cullM
+    local cRight = camera.x + love.graphics.getWidth() + cullM
+    local cTop = camera.y - cullM
+    local cBottom = camera.y + love.graphics.getHeight() + cullM
+
+    -- Difficulty color lookup
+    local DIFF_COLORS = {
+        easy    = {0.2, 0.9, 0.3},
+        medium  = {1.0, 0.9, 0.2},
+        hard    = {1.0, 0.55, 0.1},
+        extreme = {1.0, 0.15, 0.15},
+    }
+
+    for _, rift in pairs(miniRifts) do
+        local wx = rift.worldX or 0
+        local wy = rift.worldY or 0
+
+        -- Skip offscreen rifts
+        if wx < cLeft or wx > cRight or wy < cTop or wy > cBottom then
+            goto continue_rift
+        end
+
+        local cleared = rift.cleared
+        local baseAlpha = cleared and 0.3 or 1.0
+
+        -- Base radius scales with tier
+        local tier = rift.tier or 1
+        local baseR = 18 + tier * 6  -- tier 1=24, tier 2=30, tier 3=36, tier 4=42, tier 5=48
+
+        -- Pulsing animation (outer glow)
+        local pulse = math_sin(t * 2.5 + wx * 0.013 + wy * 0.017) * 0.15
+        local glowR = baseR * (1.4 + pulse)
+
+        -- Outer purple glow (pulsing)
+        love.graphics.setColor(0.45, 0.1, 0.7, (0.25 + pulse * 0.5) * baseAlpha * fadeIn)
+        love.graphics.circle("fill", wx, wy, glowR)
+
+        -- Secondary glow ring
+        love.graphics.setColor(0.6, 0.2, 0.9, (0.15 + pulse * 0.3) * baseAlpha * fadeIn)
+        love.graphics.setLineWidth(2)
+        love.graphics.circle("line", wx, wy, glowR)
+        love.graphics.setLineWidth(1)
+
+        -- Swirling inner void (dark purple/black rotating)
+        local innerR = baseR * 0.95
+        local swirl1 = t * 1.8 + wx * 0.007
+        local swirl2 = t * 1.8 + wx * 0.007 + math_pi
+        -- Two swirling arcs
+        love.graphics.setColor(0.2, 0.02, 0.35, 0.8 * baseAlpha * fadeIn)
+        love.graphics.arc("fill", "pie", wx, wy, innerR, swirl1, swirl1 + math_pi * 0.7)
+        love.graphics.setColor(0.1, 0.0, 0.2, 0.9 * baseAlpha * fadeIn)
+        love.graphics.arc("fill", "pie", wx, wy, innerR, swirl2, swirl2 + math_pi * 0.7)
+
+        -- Main void body
+        love.graphics.setColor(0.08, 0.0, 0.12, 0.9 * baseAlpha * fadeIn)
+        love.graphics.circle("fill", wx, wy, innerR * 0.85)
+
+        -- Dark core
+        love.graphics.setColor(0.02, 0.0, 0.04, 0.95 * baseAlpha * fadeIn)
+        love.graphics.circle("fill", wx, wy, innerR * 0.55)
+
+        -- Sickly green center pulse (Atlas radiation)
+        local greenPulse = 0.4 + math_sin(t * 4.5 + wy * 0.02) * 0.35
+        love.graphics.setColor(0.3, 0.9, 0.2, greenPulse * 0.6 * baseAlpha * fadeIn)
+        love.graphics.circle("fill", wx, wy, innerR * 0.25)
+        love.graphics.setColor(0.5, 1, 0.3, greenPulse * 0.3 * baseAlpha * fadeIn)
+        love.graphics.circle("fill", wx, wy, innerR * 0.15)
+
+        -- Orbiting void particles (6 particles)
+        for pi = 0, 5 do
+            local angle = t * (1.2 + pi * 0.15) + pi * (math_pi * 2 / 6)
+            local orbitR = baseR * (1.1 + math_sin(t * 2 + pi) * 0.15)
+            local px = wx + math_cos(angle) * orbitR
+            local py = wy + math_sin(angle) * orbitR
+            local pAlpha = 0.5 + math_sin(t * 3 + pi * 1.5) * 0.3
+            love.graphics.setColor(0.5, 0.15, 0.8, pAlpha * baseAlpha * fadeIn)
+            love.graphics.circle("fill", px, py, 2 + math_sin(t * 4 + pi) * 0.8)
+        end
+
+        -- Outer edge shimmer ring
+        love.graphics.setColor(0.7, 0.3, 1, (0.3 + pulse * 0.4) * baseAlpha * fadeIn)
+        love.graphics.setLineWidth(1.5)
+        love.graphics.circle("line", wx, wy, baseR)
+        love.graphics.setLineWidth(1)
+
+        -- Corruption radius indicator (subtle ground stain)
+        local cRadius = rift.corruptionRadius or 0
+        if cRadius > 0 and not cleared then
+            local cPulse = math_sin(t * 0.8 + wx * 0.005) * 0.03
+            love.graphics.setColor(0.25, 0.05, 0.35, (0.06 + cPulse) * fadeIn)
+            love.graphics.circle("fill", wx, wy, cRadius)
+            love.graphics.setColor(0.35, 0.08, 0.5, (0.08 + cPulse) * fadeIn)
+            love.graphics.setLineWidth(1)
+            love.graphics.circle("line", wx, wy, cRadius)
+        end
+
+        -- Name label above rift
+        if not cleared then
+            love.graphics.setFont(fonts.npc)
+            local diffKey = rift.difficulty or "medium"
+            local dc = DIFF_COLORS[diffKey] or DIFF_COLORS.medium
+            love.graphics.setColor(dc[1], dc[2], dc[3], 0.9 * fadeIn)
+            local name = rift.name or "Rift"
+            local nameW = (fonts.npc):getWidth(name)
+            love.graphics.print(name, wx - nameW / 2, wy - baseR - 22)
+
+            -- Tier + floor count below name
+            local info = "Tier " .. tier .. " [" .. (rift.totalFloors or "?") .. " floors]"
+            local infoW = (fonts.npc):getWidth(info)
+            love.graphics.setColor(dc[1], dc[2], dc[3], 0.65 * fadeIn)
+            love.graphics.print(info, wx - infoW / 2, wy - baseR - 10)
+
+            -- Player count indicator (if anyone is inside)
+            local pc = rift.playerCount or 0
+            if pc > 0 then
+                local pcText = pc .. " inside"
+                local pcW = (fonts.npc):getWidth(pcText)
+                love.graphics.setColor(0.8, 0.8, 1, 0.6 * fadeIn)
+                love.graphics.print(pcText, wx - pcW / 2, wy + baseR + 4)
+            end
+        else
+            -- Cleared rift: dim label
+            love.graphics.setFont(fonts.npc)
+            love.graphics.setColor(0.5, 0.5, 0.5, 0.5 * fadeIn)
+            local sealedText = (rift.name or "Rift") .. " (Sealed)"
+            local sw = (fonts.npc):getWidth(sealedText)
+            love.graphics.print(sealedText, wx - sw / 2, wy - baseR - 16)
+        end
+
+        ::continue_rift::
+    end
+
+    -- Rift destruction VFX: white flash implosion
+    for _, vfx in ipairs(riftDestroyVfx) do
+        local progress = 1 - (vfx.timer / vfx.maxTimer)
+        local wx = vfx.worldX
+        local wy = vfx.worldY
+
+        if progress < 0.3 then
+            -- Phase 1: expanding bright flash
+            local p = progress / 0.3
+            local flashR = 60 * p
+            love.graphics.setColor(1, 1, 1, (1 - p * 0.5) * fadeIn)
+            love.graphics.circle("fill", wx, wy, flashR)
+            love.graphics.setColor(0.7, 0.4, 1, (0.8 - p * 0.3) * fadeIn)
+            love.graphics.circle("fill", wx, wy, flashR * 0.6)
+        elseif progress < 0.7 then
+            -- Phase 2: implosion (shrinking ring)
+            local p = (progress - 0.3) / 0.4
+            local ringR = 60 * (1 - p)
+            love.graphics.setColor(0.9, 0.8, 1, (1 - p) * 0.7 * fadeIn)
+            love.graphics.setLineWidth(3 - p * 2)
+            love.graphics.circle("line", wx, wy, ringR)
+            love.graphics.setLineWidth(1)
+            love.graphics.setColor(0.5, 0.2, 0.8, (1 - p) * 0.5 * fadeIn)
+            love.graphics.circle("fill", wx, wy, ringR * 0.3)
+        else
+            -- Phase 3: fading spark
+            local p = (progress - 0.7) / 0.3
+            love.graphics.setColor(0.8, 0.6, 1, (1 - p) * 0.4 * fadeIn)
+            love.graphics.circle("fill", wx, wy, 4 * (1 - p))
+        end
     end
 end
 
@@ -7453,6 +8327,52 @@ function game.drawPlayer(p, isMe)
         end
     end
 
+    -- Land mount visual: draw horse/caravan beneath player on overworld
+    if isMe and rpg.mount and LAND_MOUNT_SPEED[rpg.mount] and overworld.chunkBased then
+        if rpg.mount == "horse" then
+            -- Horse body (brown ellipse beneath player)
+            love.graphics.setColor(0.55, 0.35, 0.15, 0.85)
+            love.graphics.ellipse("fill", p.x, p.y + 6, 18, 10)
+            -- Horse head
+            love.graphics.setColor(0.5, 0.3, 0.12, 0.9)
+            love.graphics.ellipse("fill", p.x + 12, p.y - 2, 6, 5)
+            -- Legs
+            love.graphics.setColor(0.4, 0.25, 0.1, 0.7)
+            love.graphics.rectangle("fill", p.x - 10, p.y + 12, 3, 8)
+            love.graphics.rectangle("fill", p.x - 3, p.y + 12, 3, 8)
+            love.graphics.rectangle("fill", p.x + 4, p.y + 12, 3, 8)
+            love.graphics.rectangle("fill", p.x + 11, p.y + 12, 3, 8)
+        elseif rpg.mount == "caravan" then
+            -- Caravan wagon body
+            love.graphics.setColor(0.45, 0.3, 0.15, 0.85)
+            love.graphics.rectangle("fill", p.x - 20, p.y - 2, 40, 20, 3, 3)
+            -- Canvas top
+            love.graphics.setColor(0.7, 0.65, 0.5, 0.7)
+            love.graphics.arc("fill", p.x, p.y - 2, 20, math.pi, 0)
+            -- Wheels
+            love.graphics.setColor(0.3, 0.2, 0.1, 0.9)
+            love.graphics.circle("fill", p.x - 14, p.y + 18, 5)
+            love.graphics.circle("fill", p.x + 14, p.y + 18, 5)
+            love.graphics.setColor(0.5, 0.4, 0.25, 0.6)
+            love.graphics.circle("line", p.x - 14, p.y + 18, 5)
+            love.graphics.circle("line", p.x + 14, p.y + 18, 5)
+        end
+    end
+
+    -- Ascension glow (eternal_mark)
+    local hasAscGlow = (isMe and rpg.ascensionMark) or (not isMe and p.ascensionMark)
+    if hasAscGlow then
+        local t = love.timer.getTime()
+        local pulse = 0.55 + 0.15 * math.sin(t * 2.0)
+        local outerPulse = 22 + 3 * math.sin(t * 1.5)
+        -- Outer golden halo
+        love.graphics.setColor(1.0, 0.85, 0.3, pulse * 0.25)
+        love.graphics.circle("fill", p.x, p.y - 2, outerPulse)
+        -- Inner radiant glow
+        love.graphics.setColor(1.0, 0.9, 0.5, pulse * 0.4)
+        love.graphics.circle("fill", p.x, p.y - 2, 14)
+    end
+
     -- Shadow
     love.graphics.setColor(0, 0, 0, 0.2)
     love.graphics.ellipse("fill", p.x, p.y + 14, 10, 4)
@@ -7496,6 +8416,54 @@ function game.drawPlayer(p, isMe)
         love.graphics.setColor(1, 1, 1, 0.3 + math.sin(love.timer.getTime() * 4) * 0.15)
         love.graphics.setLineWidth(1)
         love.graphics.circle("line", p.x, p.y, 18)
+    end
+end
+
+-- NPC Dialogue Panel
+function game.drawDialoguePanel(W, H)
+    if not npcDialogue.show then return end
+
+    local panelW = math.min(600, W - 40)
+    local panelH = 200
+    local panelX = (W - panelW) / 2
+    local panelY = H - panelH - 20
+
+    -- Background
+    love.graphics.setColor(0.05, 0.05, 0.12, 0.92)
+    love.graphics.rectangle("fill", panelX, panelY, panelW, panelH, 8, 8)
+    love.graphics.setColor(0.4, 0.5, 0.8, 0.8)
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", panelX, panelY, panelW, panelH, 8, 8)
+
+    -- NPC Name
+    love.graphics.setColor(1, 0.85, 0.3, 1)
+    love.graphics.setFont(fonts.bold or love.graphics.getFont())
+    love.graphics.print(npcDialogue.npcName, panelX + 16, panelY + 10)
+
+    -- Text
+    love.graphics.setColor(0.9, 0.9, 0.95, 1)
+    love.graphics.setFont(fonts.main or love.graphics.getFont())
+    love.graphics.printf(npcDialogue.text, panelX + 16, panelY + 35, panelW - 32, "left")
+
+    -- Choices
+    local choiceY = panelY + 100
+    for i, choice in ipairs(npcDialogue.choices) do
+        local label = "[" .. i .. "] " .. (choice.label or "...")
+        local mx, my = love.mouse.getPosition()
+        local choiceX = panelX + 24
+        local choiceW = panelW - 48
+        local choiceH = 22
+        local hover = mx >= choiceX and mx <= choiceX + choiceW and my >= choiceY and my <= choiceY + choiceH
+
+        if hover then
+            love.graphics.setColor(0.3, 0.4, 0.7, 0.5)
+            love.graphics.rectangle("fill", choiceX - 4, choiceY - 2, choiceW + 8, choiceH + 4, 4, 4)
+            love.graphics.setColor(0.6, 0.8, 1, 1)
+        else
+            love.graphics.setColor(0.7, 0.75, 0.85, 1)
+        end
+        love.graphics.print(label, choiceX, choiceY)
+        choiceY = choiceY + 24
     end
 end
 
@@ -7653,12 +8621,13 @@ function game.drawHUD(W, H)
     end
 
     -- Stamina bar (only visible when not full or sprinting)
-    if sprint.stamina < sprint.MAX or sprint.isSprinting then
+    local sprintBarMax = computeSprintBonuses().max
+    if sprint.stamina < sprintBarMax or sprint.isSprinting then
         local barW = 120
         local barH = 6
         local barX = W / 2 - barW / 2
         local barY = 38
-        local pct = sprint.stamina / sprint.MAX
+        local pct = sprint.stamina / sprintBarMax
 
         -- Background
         love.graphics.setColor(0, 0, 0, 0.5 * fadeIn)
@@ -7689,11 +8658,29 @@ function game.drawHUD(W, H)
         end
     end
 
+    -- Base raid alert banner
+    if ui.baseRaidAlert then
+        local alertAge = love.timer.getTime() - (ui.baseRaidAlert.receivedAt or 0)
+        local alertDur = (ui.baseRaidAlert.alertDuration or 60000) / 1000
+        if alertAge < alertDur + 5 then
+            local flash = 0.7 + 0.3 * math.sin(love.timer.getTime() * 6)
+            love.graphics.setColor(0.8, 0.1, 0.1, flash * fadeIn * 0.9)
+            love.graphics.rectangle("fill", W/2 - 200, 60, 400, 36, 6, 6)
+            love.graphics.setColor(1, 1, 1, fadeIn)
+            love.graphics.setFont(fonts.ui)
+            love.graphics.printf("BASE UNDER ATTACK! Press H for Home Teleport", W/2 - 195, 68, 390, "center")
+            local remaining = math.max(0, math.ceil(alertDur - alertAge))
+            love.graphics.setFont(fonts.npc)
+            love.graphics.setColor(1, 0.8, 0.3, fadeIn)
+            love.graphics.printf(remaining .. "s until enemies arrive", W/2 - 195, 88, 390, "center")
+        end
+    end
+
     -- Controls hint
     love.graphics.setFont(fonts.npc)
     love.graphics.setColor(0.5, 0.5, 0.6, fadeIn * 0.4)
     local sprintHint = overworld.chunkBased and "" or " | Shift:Sprint"
-    love.graphics.printf("WASD:Move" .. sprintHint .. " | Enter:Chat | E:Interact | I:Inv | C:Char | K:Cards | M:Map | Y:Party", 0, H - 18, W - 10, "right")
+    love.graphics.printf("WASD:Move" .. sprintHint .. " | Enter:Chat | E:Interact | I:Inv | C:Char | K:Cards | M:Map | F:Farm | H:Home", 0, H - 18, W - 10, "right")
 end
 
 function game.drawChat(W, H)
@@ -9049,6 +10036,19 @@ function game.hexToRGB(hex)
 end
 
 function game.keypressed(key)
+    -- NPC Dialogue keyboard: number keys select choices
+    if npcDialogue.show then
+        local num = tonumber(key)
+        if num and num >= 1 and num <= #npcDialogue.choices then
+            client:emit("npc_dialogue_choice", { choiceIndex = npcDialogue.choices[num].index })
+            return
+        end
+        if key == "escape" then
+            npcDialogue.show = false
+            return
+        end
+    end
+
     -- Escape during zone loading OR error state returns to server select
     if not zone and key == "escape" then
         game._loadError = nil
@@ -9511,6 +10511,17 @@ function game.keypressed(key)
                     end
                 end
             end
+            -- Adjacent corpse
+            for _, cr in ipairs(dungeon.corpses) do
+                if not cr.examined then
+                    local dx = math.abs(cr.x - dungeon.playerTileX)
+                    local dy = math.abs(cr.y - dungeon.playerTileY)
+                    if dx <= 1 and dy <= 1 and (dx + dy) <= 1 then
+                        client:emit("dungeon_examine_corpse", { x = cr.x, y = cr.y })
+                        break
+                    end
+                end
+            end
             return  -- handled dungeon interaction
         end
 
@@ -9529,6 +10540,12 @@ function game.keypressed(key)
             end
             if myLevel >= (hoverResource.minLevel or 1) then
                 client:emit("resource_harvest", { resourceId = hoverResource.id })
+            end
+        elseif overworld.hoverRift then
+            -- Mini-rift interaction: enter as dungeon
+            local rift = overworld.hoverRift
+            if client then
+                client:emit("dungeon_enter", { dungeonId = "minirift_" .. rift.riftId })
             end
         elseif overworld.hoverCave then
             -- Cave interaction
@@ -9552,7 +10569,7 @@ function game.keypressed(key)
             end
         elseif hoverObject then
             -- Interact with placed object
-            if hoverObject.type == "forge" then
+            if hoverObject.type == "forge" or hoverObject.type == "advanced_forge" or hoverObject.type == "master_forge" then
                 ui.showInventory = true
                 ui.inventoryTab = "crafting"
                 ui.craftingFilter = "forge"
@@ -9560,8 +10577,60 @@ function game.keypressed(key)
                 ui.showInventory = true
                 ui.inventoryTab = "crafting"
                 ui.craftingFilter = "anvil"
+            elseif hoverObject.type == "alchemy_table" or hoverObject.type == "advanced_alchemy_table" or hoverObject.type == "master_alchemy_table" then
+                ui.showInventory = true
+                ui.inventoryTab = "crafting"
+                ui.craftingFilter = "alchemy_table"
+            elseif hoverObject.type == "loom" or hoverObject.type == "advanced_loom" or hoverObject.type == "master_loom" then
+                ui.showInventory = true
+                ui.inventoryTab = "crafting"
+                ui.craftingFilter = "loom"
+            elseif hoverObject.type == "brewery" or hoverObject.type == "advanced_brewery" or hoverObject.type == "master_brewery" then
+                ui.showInventory = true
+                ui.inventoryTab = "crafting"
+                ui.craftingFilter = "brewery"
+            elseif hoverObject.type == "enchanting_table" or hoverObject.type == "advanced_enchanting_table" then
+                ui.showInventory = true
+                ui.inventoryTab = "crafting"
+                ui.craftingFilter = "enchanting_table"
+            elseif hoverObject.type == "cauldron" then
+                ui.showInventory = true
+                ui.inventoryTab = "crafting"
+                ui.craftingFilter = "cauldron"
             elseif hoverObject.type == "storage_chest" then
                 client:emit("interact_object", { objectId = hoverObject.id, action = "open_chest" })
+            elseif hoverObject.type == "crop_plot" or hoverObject.type == "garden_bed" then
+                -- Crop interaction: plant/water/harvest depending on state
+                if hoverObject.crop and hoverObject.crop.stage == 3 then
+                    client:emit("harvest_crop", { cropPlotId = hoverObject.id })
+                elseif hoverObject.crop and hoverObject.crop.stage < 3 then
+                    client:emit("water_crop", { cropPlotId = hoverObject.id })
+                else
+                    -- No crop planted - open farming panel to plant
+                    game.closeAllPanels()
+                    ui.showFarming = true
+                    ui.farmingTab = "crops"
+                    ui.farmingPlotId = hoverObject.id
+                    if client then client:emit("check_crops", {}) end
+                end
+            elseif hoverObject.type == "animal_pen" then
+                -- Animal pen: feed or collect
+                local hasProducts = false
+                if hoverObject.animals then
+                    for _, ani in ipairs(hoverObject.animals) do
+                        if ani.pendingProducts and #ani.pendingProducts > 0 then
+                            hasProducts = true
+                            break
+                        end
+                    end
+                end
+                if hasProducts then
+                    client:emit("animal_collect", { animalPenId = hoverObject.id })
+                else
+                    client:emit("animal_feed", { animalPenId = hoverObject.id })
+                end
+            elseif hoverObject.type == "bed" then
+                client:emit("furniture_interact", { objectId = hoverObject.id, action = "sleep" })
             end
         end
         -- NPC interactions (town)
@@ -9663,6 +10732,19 @@ function game.keypressed(key)
         knowledge.bookContent = nil
         if ui.showKnowledge and client then
             client:emit("knowledge_get", { tab = knowledge.tab })
+        end
+    elseif key == "f" then
+        -- Farming panel toggle
+        local wasOpen = ui.showFarming
+        game.closeAllPanels()
+        ui.showFarming = not wasOpen
+        if ui.showFarming and client then
+            client:emit("check_crops", {})
+        end
+    elseif key == "h" then
+        -- Home teleport
+        if not permadeath.showHallOfHeroes and client then
+            client:emit("home_teleport", {})
         end
     elseif key == "p" then
         -- Plot claim/unclaim toggle
@@ -9781,6 +10863,32 @@ function game.textinput(text)
 end
 
 function game.mousepressed(x, y, button)
+    -- NPC Dialogue click handling
+    if npcDialogue.show and button == 1 then
+        local W = love.graphics.getWidth()
+        local H = love.graphics.getHeight()
+        local panelW = math.min(600, W - 40)
+        local panelH = 200
+        local panelX = (W - panelW) / 2
+        local panelY = H - panelH - 20
+        local choiceY = panelY + 100
+        for i, choice in ipairs(npcDialogue.choices) do
+            local choiceX = panelX + 24
+            local choiceW = panelW - 48
+            local choiceH = 22
+            if x >= choiceX and x <= choiceX + choiceW and y >= choiceY and y <= choiceY + choiceH then
+                client:emit("npc_dialogue_choice", { choiceIndex = choice.index })
+                return
+            end
+            choiceY = choiceY + 24
+        end
+        -- Click outside choices closes dialogue
+        if x < panelX or x > panelX + panelW or y < panelY or y > panelY + panelH then
+            npcDialogue.show = false
+        end
+        return
+    end
+
     -- Pack reveal click handling (highest priority when active)
     if packReveal and button == 1 then
         if packReveal.done then
@@ -9836,6 +10944,13 @@ function game.mousepressed(x, y, button)
     -- Knowledge panel click handling
     if ui.showKnowledge then
         if game.handleKnowledgeClick(x, y, button) then
+            return
+        end
+    end
+
+    -- Farming panel click handling
+    if ui.showFarming and button == 1 then
+        if game.handleFarmingClick(x, y) then
             return
         end
     end
@@ -12399,6 +13514,14 @@ function game.drawDungeonFloor()
                     love.graphics.rectangle("fill", px, py, ts, ts)
                     love.graphics.setColor(shortcutColor[1], shortcutColor[2], shortcutColor[3])
                     love.graphics.circle("line", px + ts/2, py + ts/2, 8)
+                elseif tile == DTILE.CORPSE then
+                    -- Floor base
+                    love.graphics.setColor(floorColor[1], floorColor[2], floorColor[3])
+                    love.graphics.rectangle("fill", px, py, ts, ts)
+                    -- Bone-white skull + crossbones shape
+                    love.graphics.setColor(0.7, 0.65, 0.55, 0.8)
+                    love.graphics.circle("fill", px + ts/2, py + ts/2 - 2, 5)
+                    love.graphics.rectangle("fill", px + ts/2 - 6, py + ts/2 + 3, 12, 3)
                 else
                     -- Unknown/entrance/exit — render as floor
                     love.graphics.setColor(floorColor[1], floorColor[2], floorColor[3])
@@ -12477,6 +13600,31 @@ function game.drawDungeonEntities()
                 love.graphics.setFont(fonts.small)
                 love.graphics.setColor(0.5, 0.8, 1, 0.8)
                 love.graphics.printf(npc.type or "NPC", nx - 30, ny - 18, 60, "center")
+            end
+        end
+    end
+
+    -- Draw corpses
+    for _, cr in ipairs(dungeon.corpses) do
+        local crx = cr.x * ts
+        local cry = cr.y * ts
+        local fogKey = cr.x .. "," .. cr.y
+        if dungeon.fog[fogKey] then
+            if cr.examined then
+                -- Dimmed out
+                love.graphics.setColor(0.4, 0.35, 0.3, 0.4)
+            else
+                -- Brighter bone with subtle glow
+                love.graphics.setColor(0.8, 0.75, 0.6, 0.9)
+            end
+            -- Skull shape
+            love.graphics.circle("fill", crx + ts/2, cry + ts/2 - 2, 6)
+            -- Crossbones
+            love.graphics.rectangle("fill", crx + ts/2 - 7, cry + ts/2 + 4, 14, 2)
+            if not cr.examined then
+                -- Glow effect for unexamined
+                love.graphics.setColor(0.9, 0.85, 0.6, 0.2 + math.sin(love.timer.getTime() * 3) * 0.1)
+                love.graphics.circle("fill", crx + ts/2, cry + ts/2, 10)
             end
         end
     end
@@ -13402,6 +14550,19 @@ function game.drawDungeonPrompts(W, H)
             if dx <= 1 and dy <= 1 and (dx + dy) <= 1 then
                 love.graphics.setColor(0.5, 0.8, 1, fadeIn * (0.7 + math.sin(love.timer.getTime() * 4) * 0.3))
                 love.graphics.printf("Press E to talk to " .. (npc.type or "NPC"), 0, H / 2 - 60, W, "center")
+                break
+            end
+        end
+    end
+
+    -- Check for adjacent corpse
+    for _, cr in ipairs(dungeon.corpses) do
+        if not cr.examined then
+            local dx = math.abs(cr.x - dungeon.playerTileX)
+            local dy = math.abs(cr.y - dungeon.playerTileY)
+            if dx <= 1 and dy <= 1 and (dx + dy) <= 1 then
+                love.graphics.setColor(0.8, 0.75, 0.6, fadeIn * (0.7 + math.sin(love.timer.getTime() * 4) * 0.3))
+                love.graphics.printf("Press E to examine remains", 0, H / 2 - 60, W, "center")
                 break
             end
         end
@@ -15724,6 +16885,7 @@ function game.unload()
         "portal_list", "portal_traveled", "portal_error",
         "dungeon_floor_state", "dungeon_player_moved", "dungeon_combat_result",
         "dungeon_chest_result", "dungeon_trap_triggered", "dungeon_npc_result",
+        "dungeon_corpse_examined", "dungeon_corpse_result",
         "dungeon_camp_placed", "dungeon_camp_result", "dungeon_camp_ambush",
         "dungeon_guild_result", "dungeon_quest_list_result", "dungeon_quest_complete_result",
         "dungeon_leaderboard_result", "dungeon_enemy_updated", "dungeon_player_died",
@@ -15753,6 +16915,8 @@ function game.unload()
         "party_created", "party_updated", "party_disbanded",
         "party_invite_received", "party_message", "party_error",
         "party_left", "party_invite_sent",
+        -- NPC Dialogue events
+        "npc_dialogue", "npc_dialogue_end",
         -- NPC Shop events
         "npc_shop_list", "npc_shop_prices_result", "npc_shop_bought",
         "npc_shop_sold", "npc_shop_error",
@@ -15760,6 +16924,10 @@ function game.unload()
         "trade_request_received", "trade_request_sent", "trade_started",
         "trade_offer_updated", "trade_partner_confirmed", "trade_completed",
         "trade_cancelled", "trade_expired", "trade_error",
+        -- Quest events
+        "quest_accepted", "quest_progress", "quest_turnin_result", "quest_list_result",
+        -- Monster capture/evolve events
+        "monster_capture_result", "monster_evolve_result",
         -- Admin events
         "server_rules_updated", "server_shutdown", "admin_kicked", "admin_result",
         -- Leviathan events
@@ -15861,6 +17029,381 @@ function game.resize(w, h)
     fonts.small = _G.getFont(sf(10))
     fonts.zone = _G.getFont(sf(15))
     fonts.levelUp = _G.getFont(sf(28))
+end
+
+-- ---------------------------------------------------------------------------
+-- Farming Panel
+-- ---------------------------------------------------------------------------
+
+local FARMING_TABS = {"crops", "animals", "build"}
+local FARMING_TAB_LABELS = {crops = "Crops", animals = "Animals", build = "Build"}
+
+local SEED_NAMES = {
+    wheat_seed = "Wheat Seed", herb_seed = "Herb Seed", vegetable_seed = "Vegetable Seed",
+    mushroom_spore = "Mushroom Spore", berry_seed = "Berry Seed", tea_leaf_seed = "Tea Leaf Seed",
+    pumpkin_seed = "Pumpkin Seed", corn_seed = "Corn Seed", rare_flower_seed = "Rare Flower Seed",
+    ancient_seed = "Ancient Seed",
+}
+
+local CROP_STAGE_NAMES = {"Seed", "Sprout", "Growing", "Mature", "Withered"}
+local CROP_STAGE_COLORS = {
+    {0.5, 0.4, 0.3}, {0.4, 0.7, 0.3}, {0.3, 0.8, 0.3}, {0.9, 0.8, 0.2}, {0.5, 0.3, 0.2}
+}
+
+local ANIMAL_NAMES = {
+    chicken = "Chicken", cow = "Cow", sheep = "Sheep", pig = "Pig", bee_hive = "Bee Hive"
+}
+
+function game.drawFarmingPanel(W, H)
+    local pw = math.min(700, W - 40)
+    local ph = math.min(520, H - 60)
+    local px = (W - pw) / 2
+    local py = (H - ph) / 2
+
+    -- Dim background
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", 0, 0, W, H)
+
+    -- Panel background
+    love.graphics.setColor(0.06, 0.08, 0.05, 0.95)
+    love.graphics.rectangle("fill", px, py, pw, ph, 8, 8)
+    love.graphics.setColor(0.3, 0.55, 0.25, 0.8)
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", px, py, pw, ph, 8, 8)
+
+    -- Title
+    love.graphics.setFont(fonts.title)
+    love.graphics.setColor(0.4, 0.8, 0.3)
+    love.graphics.print("Farm & Ranch", px + 15, py + 10)
+
+    -- Close hint
+    love.graphics.setFont(fonts.small)
+    love.graphics.setColor(0.5, 0.5, 0.5)
+    love.graphics.printf("[F] Close", px, py + 14, pw - 15, "right")
+
+    -- Tabs
+    local tabY = py + 40
+    local tabW = math.floor((pw - 30) / #FARMING_TABS)
+    love.graphics.setFont(fonts.ui)
+    for i, tab in ipairs(FARMING_TABS) do
+        local tx = px + 15 + (i - 1) * tabW
+        local active = (ui.farmingTab == tab)
+        if active then
+            love.graphics.setColor(0.25, 0.45, 0.2, 0.9)
+        else
+            love.graphics.setColor(0.12, 0.15, 0.1, 0.7)
+        end
+        love.graphics.rectangle("fill", tx, tabY, tabW - 4, 30, 4, 4)
+        love.graphics.setColor(active and {0.8, 1, 0.7} or {0.5, 0.6, 0.5})
+        love.graphics.printf(FARMING_TAB_LABELS[tab], tx, tabY + 6, tabW - 4, "center")
+    end
+
+    local contentY = tabY + 40
+    local contentH = ph - (contentY - py) - 10
+
+    if ui.farmingTab == "crops" then
+        game._drawCropsTab(px, contentY, pw, contentH)
+    elseif ui.farmingTab == "animals" then
+        game._drawAnimalsTab(px, contentY, pw, contentH)
+    elseif ui.farmingTab == "build" then
+        game._drawBuildTab(px, contentY, pw, contentH)
+    end
+end
+
+function game._drawCropsTab(px, cy, pw, ch)
+    love.graphics.setFont(fonts.main)
+    local crops = ui.farmCrops
+    local y = cy + 5
+
+    if #crops == 0 then
+        love.graphics.setColor(0.5, 0.6, 0.5)
+        love.graphics.printf("No crops planted. Place a Crop Plot or Garden Bed, then press [E] to plant seeds.", px + 20, y, pw - 40, "center")
+        -- Show plantable seeds from inventory
+        y = y + 40
+        love.graphics.setColor(0.4, 0.8, 0.3)
+        love.graphics.print("Available Seeds:", px + 20, y)
+        y = y + 20
+        local hasSeed = false
+        if resources then
+            for seedType, seedName in pairs(SEED_NAMES) do
+                local amt = resources[seedType] or 0
+                if amt > 0 then
+                    hasSeed = true
+                    love.graphics.setColor(0.7, 0.8, 0.6)
+                    love.graphics.print(string.format("  %s x%d", seedName, amt), px + 25, y)
+                    y = y + 18
+                end
+            end
+        end
+        if not hasSeed then
+            love.graphics.setColor(0.4, 0.4, 0.4)
+            love.graphics.print("  No seeds. Buy from Seed Merchant or harvest wild plants.", px + 25, y)
+        end
+        return
+    end
+
+    -- Header
+    love.graphics.setColor(0.4, 0.8, 0.3)
+    love.graphics.print("Plot", px + 20, y)
+    love.graphics.print("Crop", px + 100, y)
+    love.graphics.print("Stage", px + 250, y)
+    love.graphics.print("Progress", px + 370, y)
+    love.graphics.print("Watered", px + 500, y)
+    y = y + 22
+    love.graphics.setColor(0.3, 0.4, 0.25, 0.5)
+    love.graphics.rectangle("fill", px + 15, y, pw - 30, 1)
+    y = y + 5
+
+    for i, crop in ipairs(crops) do
+        if y > cy + ch - 20 then break end
+        local stage = (crop.stage or 0) + 1
+        local stageCol = CROP_STAGE_COLORS[stage] or {0.6, 0.6, 0.6}
+
+        love.graphics.setColor(0.6, 0.7, 0.6)
+        love.graphics.print("#" .. i, px + 20, y)
+
+        love.graphics.setColor(0.8, 0.9, 0.7)
+        local seedName = SEED_NAMES[crop.seedType] or crop.seedType or "?"
+        love.graphics.print(seedName:gsub("_seed", ""):gsub("_spore", ""), px + 100, y)
+
+        love.graphics.setColor(stageCol)
+        love.graphics.print(CROP_STAGE_NAMES[stage] or "?", px + 250, y)
+
+        -- Progress bar
+        local prog = crop.growthProgress or 0
+        local barX, barW = px + 370, 110
+        love.graphics.setColor(0.15, 0.2, 0.1)
+        love.graphics.rectangle("fill", barX, y + 2, barW, 12, 3, 3)
+        love.graphics.setColor(stageCol[1], stageCol[2], stageCol[3], 0.8)
+        love.graphics.rectangle("fill", barX, y + 2, barW * math.min(1, prog), 12, 3, 3)
+        love.graphics.setColor(0.9, 0.9, 0.9)
+        love.graphics.setFont(fonts.small)
+        love.graphics.printf(math.floor(prog * 100) .. "%", barX, y + 1, barW, "center")
+        love.graphics.setFont(fonts.main)
+
+        -- Watered indicator
+        if crop.wateredToday then
+            love.graphics.setColor(0.3, 0.6, 1)
+            love.graphics.print("Yes", px + 510, y)
+        else
+            love.graphics.setColor(0.7, 0.4, 0.3)
+            love.graphics.print("No", px + 510, y)
+        end
+
+        y = y + 22
+    end
+
+    -- Plant seed prompt if a plot is selected
+    if ui.farmingPlotId then
+        y = math.max(y + 10, cy + ch - 80)
+        love.graphics.setColor(0.3, 0.5, 0.25, 0.6)
+        love.graphics.rectangle("fill", px + 15, y, pw - 30, 70, 4, 4)
+        love.graphics.setColor(0.6, 0.9, 0.5)
+        love.graphics.print("Select a seed to plant (click):", px + 25, y + 5)
+        local sx = px + 25
+        local sy = y + 25
+        if resources then
+            for seedType, seedName in pairs(SEED_NAMES) do
+                local amt = resources[seedType] or 0
+                if amt > 0 then
+                    love.graphics.setColor(0.7, 0.85, 0.6)
+                    love.graphics.print(seedName .. " x" .. amt, sx, sy)
+                    sx = sx + 150
+                    if sx > px + pw - 160 then
+                        sx = px + 25
+                        sy = sy + 18
+                    end
+                end
+            end
+        end
+    end
+end
+
+function game._drawAnimalsTab(px, cy, pw, ch)
+    love.graphics.setFont(fonts.main)
+    local animals = ui.farmAnimals
+    local y = cy + 5
+
+    if #animals == 0 then
+        love.graphics.setColor(0.5, 0.6, 0.5)
+        love.graphics.printf("No animals yet. Place an Animal Pen, then buy animals from the Rancher shop.", px + 20, y, pw - 40, "center")
+        return
+    end
+
+    -- Header
+    love.graphics.setColor(0.4, 0.8, 0.3)
+    love.graphics.print("Pen", px + 20, y)
+    love.graphics.print("Animal", px + 80, y)
+    love.graphics.print("Name", px + 180, y)
+    love.graphics.print("Happy", px + 310, y)
+    love.graphics.print("Products", px + 400, y)
+    y = y + 22
+    love.graphics.setColor(0.3, 0.4, 0.25, 0.5)
+    love.graphics.rectangle("fill", px + 15, y, pw - 30, 1)
+    y = y + 5
+
+    for i, pen in ipairs(animals) do
+        if pen.animals then
+            for j, ani in ipairs(pen.animals) do
+                if y > cy + ch - 20 then break end
+                love.graphics.setColor(0.6, 0.7, 0.6)
+                love.graphics.print("#" .. i, px + 20, y)
+
+                love.graphics.setColor(0.8, 0.9, 0.7)
+                love.graphics.print(ANIMAL_NAMES[ani.animalType] or ani.animalType, px + 80, y)
+
+                love.graphics.setColor(0.7, 0.8, 0.9)
+                love.graphics.print(ani.name or "-", px + 180, y)
+
+                -- Happiness bar
+                local hap = ani.happiness or 0
+                local hapCol = hap >= 50 and {0.3, 0.8, 0.3} or (hap >= 25 and {0.8, 0.7, 0.2} or {0.8, 0.3, 0.2})
+                local barX, barW = px + 310, 70
+                love.graphics.setColor(0.15, 0.2, 0.1)
+                love.graphics.rectangle("fill", barX, y + 2, barW, 12, 3, 3)
+                love.graphics.setColor(hapCol)
+                love.graphics.rectangle("fill", barX, y + 2, barW * (hap / 100), 12, 3, 3)
+                love.graphics.setColor(0.9, 0.9, 0.9)
+                love.graphics.setFont(fonts.small)
+                love.graphics.printf(hap .. "%", barX, y + 1, barW, "center")
+                love.graphics.setFont(fonts.main)
+
+                -- Pending products
+                local prodStr = ""
+                if ani.pendingProducts and #ani.pendingProducts > 0 then
+                    for _, prod in ipairs(ani.pendingProducts) do
+                        if prodStr ~= "" then prodStr = prodStr .. ", " end
+                        prodStr = prodStr .. (prod.type or "?") .. " x" .. (prod.amount or 1)
+                    end
+                    love.graphics.setColor(0.9, 0.85, 0.4)
+                else
+                    prodStr = "-"
+                    love.graphics.setColor(0.5, 0.5, 0.5)
+                end
+                love.graphics.print(prodStr, px + 400, y)
+
+                y = y + 22
+            end
+        end
+    end
+
+    -- Hint
+    love.graphics.setColor(0.4, 0.5, 0.4)
+    love.graphics.setFont(fonts.small)
+    love.graphics.printf("[E] near pen to feed/collect", px + 15, cy + ch - 18, pw - 30, "center")
+end
+
+function game._drawBuildTab(px, cy, pw, ch)
+    love.graphics.setFont(fonts.main)
+    local y = cy + 5
+
+    love.graphics.setColor(0.4, 0.8, 0.3)
+    love.graphics.print("Farming Structures", px + 20, y)
+    y = y + 22
+
+    local buildItems = {
+        {name = "Crop Plot", desc = "Plant crops here (craft from wood + stone)"},
+        {name = "Garden Bed", desc = "Enhanced crop plot (craft from wood + fertilizer)"},
+        {name = "Animal Pen", desc = "House animals (craft from wood + iron bar)"},
+        {name = "Water Trough", desc = "Water source for crops (200px range)"},
+        {name = "Well", desc = "Large water source (400px range)"},
+        {name = "Scarecrow", desc = "Prevents crop withering (15% per scarecrow)"},
+        {name = "Sprinkler", desc = "Auto-waters crops within 150px"},
+    }
+
+    for _, item in ipairs(buildItems) do
+        if y > cy + ch - 20 then break end
+        love.graphics.setColor(0.7, 0.85, 0.6)
+        love.graphics.print(item.name, px + 25, y)
+        love.graphics.setColor(0.5, 0.6, 0.5)
+        love.graphics.print(item.desc, px + 180, y)
+        y = y + 20
+    end
+
+    y = y + 15
+    love.graphics.setColor(0.4, 0.8, 0.3)
+    love.graphics.print("Furniture Effects", px + 20, y)
+    y = y + 22
+
+    local furnitureItems = {
+        {name = "Bed", desc = "Sleep to gain +2 VIG, +10% XP for 10min"},
+        {name = "Bookshelf", desc = "+5% all skill XP on plot (stacks 3x)"},
+        {name = "Lantern", desc = "-10% night penalty on plot (stacks 6x)"},
+        {name = "Clock", desc = "+5% crop growth speed"},
+        {name = "Trophy Mount", desc = "+1 Presence per trophy (max 5)"},
+    }
+
+    for _, item in ipairs(furnitureItems) do
+        if y > cy + ch - 20 then break end
+        love.graphics.setColor(0.7, 0.8, 0.9)
+        love.graphics.print(item.name, px + 25, y)
+        love.graphics.setColor(0.5, 0.55, 0.6)
+        love.graphics.print(item.desc, px + 180, y)
+        y = y + 20
+    end
+
+    love.graphics.setColor(0.4, 0.5, 0.4)
+    love.graphics.setFont(fonts.small)
+    love.graphics.printf("Open Inventory [I] > Crafting to build structures", px + 15, cy + ch - 18, pw - 30, "center")
+end
+
+function game.handleFarmingClick(mx, my)
+    local W, H = love.graphics.getDimensions()
+    local pw = math.min(700, W - 40)
+    local ph = math.min(520, H - 60)
+    local px = (W - pw) / 2
+    local py = (H - ph) / 2
+
+    -- Outside panel = close
+    if mx < px or mx > px + pw or my < py or my > py + ph then
+        ui.showFarming = false
+        ui.farmingPlotId = nil
+        return true
+    end
+
+    -- Tab clicks
+    local tabY = py + 40
+    local tabW = math.floor((pw - 30) / #FARMING_TABS)
+    if my >= tabY and my <= tabY + 30 then
+        for i, tab in ipairs(FARMING_TABS) do
+            local tx = px + 15 + (i - 1) * tabW
+            if mx >= tx and mx <= tx + tabW - 4 then
+                ui.farmingTab = tab
+                return true
+            end
+        end
+    end
+
+    -- Seed selection when a plot is selected (crops tab)
+    if ui.farmingTab == "crops" and ui.farmingPlotId and resources then
+        local contentY = tabY + 40
+        local contentH = ph - (contentY - py) - 10
+        local seedY = math.max(contentY + (#ui.farmCrops * 22) + 50, contentY + contentH - 80)
+        if my >= seedY + 25 then
+            local sx = px + 25
+            local sy = seedY + 25
+            for seedType, seedName in pairs(SEED_NAMES) do
+                local amt = resources[seedType] or 0
+                if amt > 0 then
+                    local tw = 150
+                    if mx >= sx and mx <= sx + tw and my >= sy and my <= sy + 18 then
+                        if client then
+                            client:emit("plant_seed", { cropPlotId = ui.farmingPlotId, seedType = seedType })
+                            ui.farmingPlotId = nil
+                        end
+                        return true
+                    end
+                    sx = sx + 150
+                    if sx > px + pw - 160 then
+                        sx = px + 25
+                        sy = sy + 18
+                    end
+                end
+            end
+        end
+    end
+
+    return true -- consume click within panel
 end
 
 -- ---------------------------------------------------------------------------

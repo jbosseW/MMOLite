@@ -13,7 +13,21 @@ var path = require('path');
 
 var plotModule = require('./plot');
 var worldgen = require('../worldgen');
-var PLACEABLE_TYPES = ['forge', 'iron_anvil', 'storage_chest', 'wall', 'door', 'raft', 'bridge', 'crop_plot', 'water_trough', 'crafting_table', 'upgrade_station', 'trading_booth', 'bed', 'bookshelf', 'cauldron', 'table', 'chair', 'barrel', 'crate', 'banner', 'loom', 'alchemy_table', 'enchanting_table', 'tanning_rack', 'brewery', 'jewelers_bench'];
+var PLACEABLE_TYPES = [
+  'forge', 'iron_anvil', 'storage_chest', 'wall', 'door', 'raft', 'bridge',
+  'crop_plot', 'water_trough', 'crafting_table', 'upgrade_station', 'trading_booth',
+  'bed', 'bookshelf', 'cauldron', 'table', 'chair', 'barrel', 'crate', 'banner',
+  'loom', 'alchemy_table', 'enchanting_table', 'tanning_rack', 'brewery', 'jewelers_bench',
+  // Structural
+  'stone_wall', 'fence', 'stone_fence', 'iron_fence', 'window', 'floor_tile', 'stone_floor', 'carpet', 'stairs', 'roof_tile',
+  // Decorative
+  'lantern', 'torch_sconce', 'signpost', 'flower_pot', 'painting', 'rug', 'clock', 'trophy_mount', 'statue',
+  // Functional
+  'well', 'animal_pen', 'scarecrow', 'sprinkler', 'garden_bed',
+  // Upgraded stations
+  'advanced_forge', 'master_forge', 'advanced_alchemy_table', 'master_alchemy_table',
+  'advanced_loom', 'master_loom', 'advanced_brewery', 'master_brewery', 'advanced_enchanting_table',
+];
 var WATER_PLACEABLE_TYPES = ['bridge'];  // types that must be placed on water
 var PLACEMENT_DISTANCES = {
   wall: 0, door: 0, bridge: 0,
@@ -29,6 +43,20 @@ var PLACEMENT_DISTANCES = {
   tanning_rack: 60,
   brewery: 60,
   jewelers_bench: 60,
+  // Structural (0px)
+  stone_wall: 0, fence: 0, stone_fence: 0, iron_fence: 0, window: 0,
+  floor_tile: 0, stone_floor: 0, carpet: 0, stairs: 0, roof_tile: 0,
+  // Decorative
+  lantern: 10, torch_sconce: 10, signpost: 20, flower_pot: 10, painting: 10,
+  rug: 10, clock: 20, trophy_mount: 15, statue: 30,
+  // Functional
+  well: 60, animal_pen: 80, scarecrow: 40, sprinkler: 40, garden_bed: 20,
+  // Upgraded stations
+  advanced_forge: 60, master_forge: 60,
+  advanced_alchemy_table: 60, master_alchemy_table: 60,
+  advanced_loom: 60, master_loom: 60,
+  advanced_brewery: 60, master_brewery: 60,
+  advanced_enchanting_table: 60,
 };
 var DEFAULT_PLACEMENT_DISTANCE = 40;
 var BRIDGE_PLACEMENT_RANGE = 80;   // extended range for bridge placement (reaching from shore)
@@ -869,12 +897,22 @@ function getWallColliders(zone) {
   var colliders = [];
   for (var i = 0; i < zone.placedObjects.length; i++) {
     var obj = zone.placedObjects[i];
-    if (obj.type === 'wall' || (obj.type === 'door' && !obj.open)) {
+    var isWall = obj.type === 'wall' || obj.type === 'stone_wall';
+    var isFence = obj.type === 'fence' || obj.type === 'stone_fence' || obj.type === 'iron_fence';
+    var isDoor = obj.type === 'door' && !obj.open;
+    if (isWall || isDoor) {
       var rot = obj.rotation || 0;
       if (rot === 0 || rot === 180) {
         colliders.push({ x: obj.x - 16, y: obj.y - 4, w: 32, h: 8 });
       } else {
         colliders.push({ x: obj.x - 4, y: obj.y - 16, w: 8, h: 32 });
+      }
+    } else if (isFence) {
+      var frot = obj.rotation || 0;
+      if (frot === 0 || frot === 180) {
+        colliders.push({ x: obj.x - 16, y: obj.y - 2, w: 32, h: 4 });
+      } else {
+        colliders.push({ x: obj.x - 2, y: obj.y - 16, w: 4, h: 32 });
       }
     }
   }

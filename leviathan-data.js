@@ -576,6 +576,49 @@ function generateOceanArenaLayout(width, height, rng, tier) {
 }
 
 // ---------------------------------------------------------------------------
+// Leviathan Abilities
+// ---------------------------------------------------------------------------
+
+const LEVIATHAN_ABILITIES = {
+  // Basic attacks
+  devour: { name: 'Devour', type: 'attack', damage: 25, range: 1, cooldown: 3,
+    description: 'Bite target for heavy damage.', statusEffect: null },
+  shell_slam: { name: 'Shell Slam', type: 'aoe', damage: 15, range: 2, radius: 2, cooldown: 4,
+    description: 'Slam the arena floor, damaging all nearby.', statusEffect: { name: 'stun', duration: 1, chance: 0.3 } },
+  ink_cloud: { name: 'Ink Cloud', type: 'aoe', damage: 5, range: 0, radius: 3, cooldown: 5,
+    description: 'Spray blinding ink in a wide area.', statusEffect: { name: 'blind', duration: 2, chance: 0.8 } },
+  grab: { name: 'Grab', type: 'attack', damage: 10, range: 2, cooldown: 3,
+    description: 'Grab a player, immobilizing them.', statusEffect: { name: 'immobilize', duration: 2, chance: 0.6 } },
+  slam: { name: 'Slam', type: 'attack', damage: 20, range: 1, cooldown: 2,
+    description: 'Heavy slam attack.', statusEffect: null },
+  whip: { name: 'Tail Whip', type: 'line', damage: 12, range: 4, cooldown: 3,
+    description: 'Sweep tail in a line, hitting all targets.', statusEffect: { name: 'knockback', distance: 2, chance: 0.5 } },
+  tidal_breath: { name: 'Tidal Breath', type: 'cone', damage: 18, range: 4, angle: 60, cooldown: 5,
+    description: 'Blast pressurized water in a cone.', statusEffect: { name: 'slow', duration: 2, chance: 0.7 } },
+  spawn_add: { name: 'Spawn Minion', type: 'summon', cooldown: 8,
+    description: 'Spawn an ocean minion to aid in combat.',
+    summon: { id: 'ocean_minion', hp: 30, atk: 8, def: 3, speed: 10 } },
+  create_hazard: { name: 'Create Hazard', type: 'terrain', cooldown: 6,
+    description: 'Mark tiles as hazardous, dealing damage per turn.',
+    hazard: { radius: 2, damagePerTurn: 8, duration: 3, tileType: 'TOXIC_POOL' } },
+  lure_pull: { name: 'Lure Pull', type: 'pull', range: 6, cooldown: 7,
+    description: 'Pull a player toward this part.', pullDistance: 3, damage: 5 },
+  fortify: { name: 'Fortify', type: 'buff', cooldown: 6,
+    description: 'Increase own defense temporarily.',
+    buff: { stat: 'def', multiplier: 1.5, duration: 3 } },
+  regenerate: { name: 'Regenerate', type: 'heal', cooldown: 8,
+    description: 'Heal this part over time.',
+    heal: { percent: 0.10, duration: 3 } },
+  lightning_strike: { name: 'Lightning Strike', type: 'attack', damage: 30, range: 5, cooldown: 6,
+    description: 'Call down lightning on a target.', statusEffect: { name: 'shock', duration: 1, chance: 0.5 } },
+  void_pulse: { name: 'Void Pulse', type: 'aoe', damage: 20, range: 0, radius: 4, cooldown: 7,
+    description: 'Release a pulse of void energy, damaging all in range.', statusEffect: { name: 'weaken', duration: 2, chance: 0.4 } },
+  constrict: { name: 'Constrict', type: 'attack', damage: 8, range: 1, cooldown: 4,
+    description: 'Coil around target, dealing sustained damage.', statusEffect: { name: 'immobilize', duration: 3, chance: 0.7 },
+    tickDamage: 5, tickDuration: 3 },
+};
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -585,6 +628,7 @@ module.exports = {
   LEVIATHAN_TEMPLATES: LEVIATHAN_TEMPLATES,
   OCEAN_REGIONS: OCEAN_REGIONS,
   LOOT_TABLES: LOOT_TABLES,
+  LEVIATHAN_ABILITIES: LEVIATHAN_ABILITIES,
   scaleLeviathan: scaleLeviathan,
   rollLeviathanLoot: rollLeviathanLoot,
   generateOceanArenaLayout: generateOceanArenaLayout,

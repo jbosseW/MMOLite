@@ -6,6 +6,7 @@
 var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
+var rpgData = require('../rpg-data');
 var challengesHandler = require('./challenges');
 
 // In-memory auction storage
@@ -27,7 +28,8 @@ var _sellerLocks = new Set();
 // Secondary index: sellerKey -> Set<listingId> for O(1) seller lookups
 var sellerIndex = new Map();
 
-// Debounced auction update broadcast (max once per 2 seconds)
+// Scoped auction update broadcast — only notify sockets currently viewing the auction (MED-2 perf fix)
+var _auctionViewers = new Set(); // socket IDs currently viewing auction
 var _auctionUpdateTimer = null;
 var _auctionIo = null;
 function debouncedAuctionUpdate(io) {
@@ -35,7 +37,12 @@ function debouncedAuctionUpdate(io) {
   if (!_auctionUpdateTimer) {
     _auctionUpdateTimer = setTimeout(function() {
       _auctionUpdateTimer = null;
-      if (_auctionIo) _auctionIo.emit('mmo_auction_update');
+      if (_auctionIo) {
+        _auctionViewers.forEach(function(sid) {
+          var s = _auctionIo.sockets.sockets.get(sid);
+          if (s) s.emit('mmo_auction_update');
+        });
+      }
     }, 2000);
   }
 }
@@ -152,8 +159,17 @@ module.exports = {
     var { user, socketAccountMap, accounts, checkEventRate } = deps;
     if (!_accounts) _accounts = accounts; // capture accounts ref for cleanExpired
 
+    // Track auction viewers for scoped update broadcasts (MED-2 perf fix)
+    // When the client sends mmo_auction_browse, it means the auction UI is open.
+    // The client also sends auction_close when closing the panel (if supported).
+    // Clean up on disconnect to prevent stale entries.
+    socket.on('auction_close', function() { _auctionViewers.delete(socket.id); });
+    socket.on('disconnect', function() { _auctionViewers.delete(socket.id); });
+
     // --- mmo_auction_browse: get marketplace listings (paginated) ---
     socket.on('mmo_auction_browse', function(data) {
+      if (!checkEventRate(socket, 'mmo_auction', 30, 10000)) return;
+      _auctionViewers.add(socket.id);
 
       cleanExpired();
 
@@ -222,6 +238,7 @@ module.exports = {
 
     // --- mmo_auction_list_card: list an RPG card for sale ---
     socket.on('mmo_auction_list_card', function(data) {
+      if (!checkEventRate(socket, 'mmo_auction', 30, 10000)) return;
       if (!data || typeof data.cardInstanceId !== 'string' || typeof data.price !== 'number') {
         socket.emit('mmo_auction_error', { message: 'Invalid request' });
         return;
@@ -310,6 +327,7 @@ module.exports = {
 
     // --- mmo_auction_list_resource: list resources for sale ---
     socket.on('mmo_auction_list_resource', function(data) {
+      if (!checkEventRate(socket, 'mmo_auction', 30, 10000)) return;
       if (!data || typeof data.resource !== 'string' || typeof data.amount !== 'number' || typeof data.price !== 'number') {
         socket.emit('mmo_auction_error', { message: 'Invalid request' });
         return;
@@ -382,6 +400,7 @@ module.exports = {
 
     // --- mmo_auction_buy: purchase a listing ---
     socket.on('mmo_auction_buy', function(data) {
+      if (!checkEventRate(socket, 'mmo_auction', 30, 10000)) return;
       if (!data || typeof data.listingId !== 'string') return;
 
       var key = socketAccountMap.get(socket.id);
@@ -434,13 +453,40 @@ module.exports = {
           return;
         }
 
+        // Pre-validate capacity BEFORE any money operations
+        if (listing.listingType === 'card' && listing.cardData) {
+          if (!acc.rpgCards) acc.rpgCards = [];
+          if (acc.rpgCards.length >= rpgData.MAX_CARD_COLLECTION) {
+            socket.emit('mmo_auction_error', { message: 'Card collection full (' + rpgData.MAX_CARD_COLLECTION + ' max)' });
+            return;
+          }
+        }
+
         // Execute purchase
         removeListing(data.listingId);
 
         var fee = Math.ceil(listing.price * LISTING_FEE_PERCENT / 100);
         var sellerProceeds = listing.price - fee;
 
-        // Deduct buyer
+        // Deduct buyer (re-verify balance atomically to prevent race condition BUG-3)
+        var freshAcc = accounts.loadAccount(key);
+        if (!freshAcc || (freshAcc.chips || 0) < listing.price) {
+          // Balance changed between check and deduction — restore listing
+          addListing(listing);
+          socket.emit('mmo_auction_error', { message: 'Not enough coins (balance changed)' });
+          return;
+        }
+
+        // Re-check card capacity with fresh account (may have changed)
+        if (listing.listingType === 'card' && listing.cardData) {
+          if (!freshAcc.rpgCards) freshAcc.rpgCards = [];
+          if (freshAcc.rpgCards.length >= rpgData.MAX_CARD_COLLECTION) {
+            addListing(listing);
+            socket.emit('mmo_auction_error', { message: 'Card collection full (' + rpgData.MAX_CARD_COLLECTION + ' max)' });
+            return;
+          }
+        }
+
         accounts.updateChips(key, -listing.price);
         // Pay seller
         accounts.updateChips(listing.sellerKey, sellerProceeds);
@@ -489,6 +535,7 @@ module.exports = {
 
     // --- mmo_auction_cancel: cancel your own listing ---
     socket.on('mmo_auction_cancel', function(data) {
+      if (!checkEventRate(socket, 'mmo_auction', 30, 10000)) return;
       if (!data || typeof data.listingId !== 'string') return;
 
       var key = socketAccountMap.get(socket.id);
@@ -528,6 +575,7 @@ module.exports = {
 
     // --- mmo_auction_my_listings: get your own listings (uses seller index) ---
     socket.on('mmo_auction_my_listings', function() {
+      if (!checkEventRate(socket, 'mmo_auction', 30, 10000)) return;
 
       var key = socketAccountMap.get(socket.id);
       if (!key) return;

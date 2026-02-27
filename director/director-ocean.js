@@ -13,6 +13,7 @@ var SIZE_TIERS        = leviathanData.SIZE_TIERS;
 var PART_POSITIONS    = leviathanData.PART_POSITIONS;
 var LEVIATHAN_TEMPLATES = leviathanData.LEVIATHAN_TEMPLATES;
 var OCEAN_REGIONS     = leviathanData.OCEAN_REGIONS;
+var LEVIATHAN_ABILITIES = leviathanData.LEVIATHAN_ABILITIES;
 
 // ---------------------------------------------------------------------------
 // State
@@ -488,6 +489,36 @@ function initiateLeviathanCombat(socketId, leviathan, io) {
     var posFn = PART_POSITIONS[part.position] || PART_POSITIONS.center;
     var pos = posFn(arenaW, arenaH);
 
+    // Resolve ability strings to full ability definitions
+    var resolvedAbilities = [];
+    if (part.abilities) {
+      for (var ai = 0; ai < part.abilities.length; ai++) {
+        var abilityName = part.abilities[ai];
+        var abilityDef = LEVIATHAN_ABILITIES[abilityName];
+        if (abilityDef) {
+          resolvedAbilities.push({
+            id: abilityName,
+            name: abilityDef.name,
+            type: abilityDef.type,
+            damage: abilityDef.damage || 0,
+            range: abilityDef.range || 1,
+            cooldown: abilityDef.cooldown || 3,
+            radius: abilityDef.radius || 0,
+            statusEffect: abilityDef.statusEffect || null,
+            summon: abilityDef.summon || null,
+            hazard: abilityDef.hazard || null,
+            pullDistance: abilityDef.pullDistance || 0,
+            buff: abilityDef.buff || null,
+            heal: abilityDef.heal || null,
+            _lastUsedTurn: 0,
+          });
+        } else {
+          // Fallback: basic attack if ability not found
+          resolvedAbilities.push({ id: abilityName, name: abilityName, type: 'attack', damage: part.atk, range: 1, cooldown: 2 });
+        }
+      }
+    }
+
     enemies.push({
       id: 'lev_' + part.id,
       name: part.name,
@@ -499,7 +530,7 @@ function initiateLeviathanCombat(socketId, leviathan, io) {
       x: pos.x,
       y: pos.y,
       archetype: part.archetype,
-      abilities: part.abilities,
+      abilities: resolvedAbilities,
       isLeviathanPart: true,
       leviathanUid: leviathan.uid,
       partId: part.id,
@@ -918,6 +949,142 @@ function handleDisconnect(socketId) {
 }
 
 // ---------------------------------------------------------------------------
+// Leviathan ability execution (called from dungeon-combat AI tick)
+// ---------------------------------------------------------------------------
+
+function executeLeviathanAbility(combat, unit, ability, targets, broadcastFn) {
+  if (!ability || !unit || !unit.alive) return;
+
+  var turnNow = combat.turn || 0;
+  // Check cooldown
+  if (ability._lastUsedTurn && (turnNow - ability._lastUsedTurn) < (ability.cooldown || 2)) return;
+  ability._lastUsedTurn = turnNow;
+
+  switch (ability.type) {
+    case 'attack': {
+      // Single-target damage + optional status effect
+      for (var i = 0; i < targets.length; i++) {
+        var target = combat.units.get(targets[i]);
+        if (!target || !target.alive) continue;
+        var dmg = Math.max(1, (ability.damage || unit.atk) - (target.combat ? (target.combat.def || 0) : 0));
+        target.hp = Math.max(0, target.hp - dmg);
+        if (broadcastFn) broadcastFn('tc_damage', { sourceId: unit.id, targetId: target.id, damage: dmg, ability: ability.name });
+        if (ability.statusEffect && Math.random() < (ability.statusEffect.chance || 0.5)) {
+          if (!target.statusEffects) target.statusEffects = [];
+          target.statusEffects.push({ name: ability.statusEffect.name, duration: ability.statusEffect.duration || 2, appliedAt: turnNow });
+          if (broadcastFn) broadcastFn('tc_status_applied', { targetId: target.id, effect: ability.statusEffect.name, duration: ability.statusEffect.duration });
+        }
+        if (target.hp <= 0) target.alive = false;
+        break; // single target
+      }
+      break;
+    }
+    case 'aoe':
+    case 'cone':
+    case 'line': {
+      // Multi-target damage
+      for (var ai = 0; ai < targets.length; ai++) {
+        var aoeTarget = combat.units.get(targets[ai]);
+        if (!aoeTarget || !aoeTarget.alive) continue;
+        var aoeDmg = Math.max(1, (ability.damage || unit.atk) - Math.floor((aoeTarget.combat ? (aoeTarget.combat.def || 0) : 0) * 0.5));
+        aoeTarget.hp = Math.max(0, aoeTarget.hp - aoeDmg);
+        if (broadcastFn) broadcastFn('tc_damage', { sourceId: unit.id, targetId: aoeTarget.id, damage: aoeDmg, ability: ability.name });
+        if (ability.statusEffect && Math.random() < (ability.statusEffect.chance || 0.5)) {
+          if (!aoeTarget.statusEffects) aoeTarget.statusEffects = [];
+          aoeTarget.statusEffects.push({ name: ability.statusEffect.name, duration: ability.statusEffect.duration || 2, appliedAt: turnNow });
+        }
+        if (aoeTarget.hp <= 0) aoeTarget.alive = false;
+      }
+      break;
+    }
+    case 'summon': {
+      // Spawn a minion unit
+      if (ability.summon) {
+        var summonId = 'minion_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+        var minion = {
+          id: summonId,
+          name: 'Ocean Minion',
+          hp: ability.summon.hp || 30,
+          maxHp: ability.summon.hp || 30,
+          atk: ability.summon.atk || 8,
+          def: ability.summon.def || 3,
+          speed: ability.summon.speed || 10,
+          x: unit.x + (Math.random() < 0.5 ? -2 : 2),
+          y: unit.y + (Math.random() < 0.5 ? -2 : 2),
+          alive: true,
+          isEnemy: true,
+          abilities: [],
+        };
+        combat.units.set(summonId, minion);
+        if (broadcastFn) broadcastFn('tc_summon', { sourceId: unit.id, minion: { id: summonId, name: minion.name, hp: minion.hp, maxHp: minion.maxHp, x: minion.x, y: minion.y } });
+      }
+      break;
+    }
+    case 'terrain': {
+      // Create hazardous tiles
+      if (ability.hazard) {
+        var hazardId = 'hazard_' + Date.now();
+        if (!combat._hazards) combat._hazards = [];
+        combat._hazards.push({
+          id: hazardId,
+          x: unit.x,
+          y: unit.y,
+          radius: ability.hazard.radius || 2,
+          damagePerTurn: ability.hazard.damagePerTurn || 8,
+          duration: ability.hazard.duration || 3,
+          tileType: ability.hazard.tileType || 'TOXIC_POOL',
+          createdAt: turnNow,
+        });
+        if (broadcastFn) broadcastFn('tc_hazard_created', { x: unit.x, y: unit.y, radius: ability.hazard.radius, tileType: ability.hazard.tileType, duration: ability.hazard.duration });
+      }
+      break;
+    }
+    case 'pull': {
+      // Pull a target closer to this unit
+      for (var pi = 0; pi < targets.length; pi++) {
+        var pullTarget = combat.units.get(targets[pi]);
+        if (!pullTarget || !pullTarget.alive) continue;
+        var dx = unit.x - pullTarget.x;
+        var dy = unit.y - pullTarget.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > 0) {
+          var pullDist = Math.min(ability.pullDistance || 3, dist);
+          pullTarget.x += Math.round(dx / dist * pullDist);
+          pullTarget.y += Math.round(dy / dist * pullDist);
+        }
+        if (ability.damage) {
+          var pullDmg = Math.max(1, ability.damage);
+          pullTarget.hp = Math.max(0, pullTarget.hp - pullDmg);
+          if (pullTarget.hp <= 0) pullTarget.alive = false;
+        }
+        if (broadcastFn) broadcastFn('tc_pull', { sourceId: unit.id, targetId: pullTarget.id, newX: pullTarget.x, newY: pullTarget.y, damage: ability.damage || 0 });
+        break; // single target
+      }
+      break;
+    }
+    case 'buff': {
+      // Self-buff
+      if (ability.buff) {
+        if (!unit._buffs) unit._buffs = [];
+        unit._buffs.push({ stat: ability.buff.stat, multiplier: ability.buff.multiplier, duration: ability.buff.duration, appliedAt: turnNow });
+        if (ability.buff.stat === 'def') unit.def = Math.round(unit.def * ability.buff.multiplier);
+        if (broadcastFn) broadcastFn('tc_buff', { unitId: unit.id, ability: ability.name, stat: ability.buff.stat, duration: ability.buff.duration });
+      }
+      break;
+    }
+    case 'heal': {
+      // Self-heal
+      if (ability.heal) {
+        var healAmount = Math.round(unit.maxHp * (ability.heal.percent || 0.10));
+        unit.hp = Math.min(unit.maxHp, unit.hp + healAmount);
+        if (broadcastFn) broadcastFn('tc_heal', { unitId: unit.id, amount: healAmount, ability: ability.name });
+      }
+      break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -933,4 +1100,5 @@ module.exports = {
   getLeviathanInfo: getLeviathanInfo,
   initiateLeviathanCombat: initiateLeviathanCombat,
   broadcastPositions: broadcastPositions,
+  executeLeviathanAbility: executeLeviathanAbility,
 };

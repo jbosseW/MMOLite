@@ -4,6 +4,7 @@
 // Events: npc_shop_browse, npc_shop_buy, npc_shop_sell, npc_shop_prices
 
 var rpgData = require('../rpg-data');
+var factions = require('./factions');
 
 // ---------------------------------------------------------------------------
 // Base prices for all tradeable resources (in coins)
@@ -39,6 +40,34 @@ var BASE_PRICES = {
   gem_cut: 100,
   potion_health: 35,
   potion_mana: 40,
+  // Seeds
+  wheat_seed: 10,
+  herb_seed: 15,
+  vegetable_seed: 12,
+  mushroom_spore: 20,
+  berry_seed: 25,
+  tea_leaf_seed: 40,
+  pumpkin_seed: 35,
+  corn_seed: 30,
+  rare_flower_seed: 100,
+  ancient_seed: 500,
+  // Animal products
+  egg: 8,
+  milk: 12,
+  raw_wool: 15,
+  raw_meat: 10,
+  feather: 5,
+  honey: 30,
+  cheese: 20,
+  butter: 15,
+  animal_feed: 12,
+  // New crops
+  berries: 10,
+  tea_leaves: 20,
+  pumpkin: 25,
+  corn: 12,
+  rare_flower: 80,
+  ancient_fruit: 200,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,6 +109,16 @@ var SHOPS = {
     name: 'Provisions Merchant',
     description: 'Food and cooking supplies',
     inventory: ['wheat', 'herbs', 'vegetables', 'mushroom', 'fish', 'bread', 'stew', 'cooked_fish'],
+  },
+  seedshop: {
+    name: 'Seed Merchant',
+    description: 'Seeds for farming',
+    inventory: ['wheat_seed', 'herb_seed', 'vegetable_seed', 'mushroom_spore', 'berry_seed', 'tea_leaf_seed', 'pumpkin_seed', 'corn_seed', 'rare_flower_seed', 'ancient_seed'],
+  },
+  rancher: {
+    name: 'Rancher',
+    description: 'Animal supplies and products',
+    inventory: ['egg', 'milk', 'raw_wool', 'raw_meat', 'feather', 'honey', 'cheese', 'butter', 'animal_feed'],
   },
 };
 
@@ -254,6 +293,44 @@ module.exports = {
         totalCost = Math.max(amount, Math.round(totalCost * presenceDiscount));
       }
 
+      // Apply faction reputation discount
+      try {
+        var factionsHandler = require('./factions');
+        var state = deps.state;
+        var playerZoneId = state ? state.playerZones.get(socket.id) : null;
+        if (playerZoneId) {
+          var factionId = factionsHandler.getFactionForZone(playerZoneId);
+          if (factionId && acc.factionRep) {
+            var factionDiscount = factionsHandler.getRepDiscount(acc.factionRep[factionId] || 0);
+            if (factionDiscount !== 0) {
+              totalCost = Math.max(amount, Math.round(totalCost * (1 - factionDiscount)));
+            }
+          }
+        }
+      } catch (_fErr) { /* factions handler not available */ }
+
+      // Apply town reputation discount/surcharge (-5% to +5%)
+      try {
+        var _state2 = deps.state;
+        var _pZoneId = _state2 ? _state2.playerZones.get(socket.id) : null;
+        if (_pZoneId && acc.townReputation) {
+          var townScore = acc.townReputation[_pZoneId] || 0;
+          var townDiscount = Math.max(-0.05, Math.min(0.05, townScore * 0.0005));
+          if (townDiscount !== 0) {
+            totalCost = Math.max(amount, Math.round(totalCost * (1 - townDiscount)));
+          }
+        }
+      } catch (_tErr) { /* town rep not available */ }
+
+      // Guard hostility check (karma)
+      try {
+        var karmaHandler = require('./karma');
+        if (karmaHandler.isGuardHostile(acc)) {
+          socket.emit('npc_shop_error', { message: 'The shopkeeper refuses to serve you. Your reputation is too dark.' });
+          return;
+        }
+      } catch (_kErr) { /* karma handler not available */ }
+
       if ((acc.chips || 0) < totalCost) {
         socket.emit('npc_shop_error', { message: 'Not enough coins (need ' + totalCost + ')' });
         return;
@@ -267,7 +344,7 @@ module.exports = {
       purchaseLocks.add(key);
       try {
         // Deduct coins and add resources
-        accounts.updateChips(key, -totalCost);
+        var newBalance = accounts.updateChips(key, -totalCost);
         accounts.addResource(key, data.resource, amount);
 
         // Add buying pressure (price goes up)
@@ -279,10 +356,23 @@ module.exports = {
           amount: amount,
           totalCost: totalCost,
           unitPrice: unitPrice,
-          coins: (accounts.loadAccount(key) || {}).chips || 0,
+          coins: newBalance != null ? newBalance : 0,
           inventory: accounts.getMMOInventory(key),
           message: 'Bought ' + amount + ' ' + displayName + ' for ' + totalCost + ' coins',
         });
+
+        // Award faction reputation for shopping in this town
+        try {
+          var buyRepState = deps.state;
+          var buyRepZoneId = buyRepState ? buyRepState.playerZones.get(socket.id) : null;
+          if (buyRepZoneId) {
+            var buyRepFaction = factions.getFactionForZone(buyRepZoneId);
+            if (buyRepFaction) {
+              factions.addRep(acc, buyRepFaction, 50);
+              accounts.saveAccount(acc);
+            }
+          }
+        } catch (_repErr) { /* faction rep not critical */ }
       } finally {
         purchaseLocks.delete(key);
       }
@@ -369,10 +459,23 @@ module.exports = {
           amount: amount,
           totalPayment: totalPayment,
           unitPrice: unitPrice,
-          coins: (accounts.loadAccount(key) || {}).chips || 0,
+          coins: chipResult != null ? chipResult : 0,
           inventory: accounts.getMMOInventory(key),
           message: 'Sold ' + amount + ' ' + displayName + ' for ' + totalPayment + ' coins',
         });
+
+        // Award faction reputation for selling in this town
+        try {
+          var sellRepState = deps.state;
+          var sellRepZoneId = sellRepState ? sellRepState.playerZones.get(socket.id) : null;
+          if (sellRepZoneId && acc) {
+            var sellRepFaction = factions.getFactionForZone(sellRepZoneId);
+            if (sellRepFaction) {
+              factions.addRep(acc, sellRepFaction, 25);
+              accounts.saveAccount(acc);
+            }
+          }
+        } catch (_repErr) { /* faction rep not critical */ }
       } finally {
         purchaseLocks.delete(key);
       }
