@@ -45,6 +45,13 @@ const guilds = new Map();
 /** @type {Map<string, Array>} zoneId -> array of overworld monster objects */
 const zoneMonsters = new Map();
 
+/** @type {Map<string, object>} battleId -> battle object (legacy PvP stubs) */
+const activeBattles = new Map();
+
+function endBattle(battleId) {
+  activeBattles.delete(battleId);
+}
+
 /** @type {Map<string, {weather: string, updatedAt: number}>} biomeId -> weather state */
 const biomeWeather = new Map();
 
@@ -693,6 +700,15 @@ function getPlayerParty(socketId) {
     playerPartyMap.delete(socketId);
   }
   return null;
+}
+
+function removeParty(partyId) {
+  var party = parties.get(partyId);
+  if (!party) return;
+  for (var memberId of party.members) {
+    playerPartyMap.delete(memberId);
+  }
+  parties.delete(partyId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1673,6 +1689,11 @@ module.exports = {
   // Party ops
   createParty,
   getPlayerParty,
+  removeParty,
+
+  // Battle stubs (legacy PvP — keeps disconnect cleanup from throwing)
+  activeBattles,
+  endBattle,
 
   // World
   advanceWorldTime,

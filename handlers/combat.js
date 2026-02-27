@@ -246,14 +246,12 @@ function isMonsterMarked(monster) {
 }
 
 // Helper: check if it is currently "night" in the overworld (for nightDamageBonus)
-// Uses world time from state if available; otherwise approximate from real UTC hour.
 function isNightTime() {
-  if (_state && _state.worldTime) {
-    // worldTime.hour is 0-23; night = 20-5
-    var hour = _state.worldTime.hour || 0;
-    return hour >= 20 || hour < 5;
+  if (_state && _state.world) {
+    var tod = _state.world.timeOfDay;
+    return tod === 'night' || tod === 'dusk';
   }
-  // Fallback: use real UTC hour
+  // Fallback: real UTC hour if state is unavailable
   var utcHour = new Date().getUTCHours();
   return utcHour >= 20 || utcHour < 5;
 }

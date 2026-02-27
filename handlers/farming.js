@@ -597,7 +597,7 @@ function init(io, socket, deps) {
         pendingProducts: [],
       };
       account.mmoInventory.ownedAnimals.push(newAnimal);
-      accounts.saveAccount(key, account);
+      accounts.saveAccount(account);
 
       socket.emit('animal_bought', {
         animal: newAnimal,
@@ -682,7 +682,7 @@ function init(io, socket, deps) {
       // Move animal from inventory to pen
       account.mmoInventory.ownedAnimals.splice(animalIdx, 1);
       penObj.animals.push(animal);
-      accounts.saveAccount(key, account);
+      accounts.saveAccount(account);
 
       var zoneId = state.playerZones.get(socket.id);
       placement.savePlacements(zoneId, zone.placedObjects);

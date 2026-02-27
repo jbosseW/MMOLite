@@ -3339,6 +3339,35 @@ function buildCombatCallbacks(io, state, accounts, socketAccountMap, dungeonId, 
         emitQuestUpdate(killSocket, accounts, accKey, killQuestResult);
       }
 
+      // --- World quest: bossKill and caveComplete tracking ---
+      if (enemy.isBoss && accKey) {
+        try {
+          var wqBossAcc = accounts.loadAccount(accKey);
+          if (wqBossAcc && wqBossAcc.questProgress && wqBossAcc.questProgress.active) {
+            var _wqBossRpg = require('../rpg-data');
+            var wqBossChanged = false;
+            var bossKillInfo = playerDungeons.get(socketId);
+            var isCaveDungeon = bossKillInfo && bossKillInfo.dungeonId !== 'rift' && !bossKillInfo.isLichRaid;
+            for (var wqbi = 0; wqbi < wqBossAcc.questProgress.active.length; wqbi++) {
+              var wqb = wqBossAcc.questProgress.active[wqbi];
+              var wqbTmpl = _wqBossRpg.WORLD_QUEST_TEMPLATES && _wqBossRpg.WORLD_QUEST_TEMPLATES.find(function(t) { return t.questId === wqb.questId; });
+              if (!wqbTmpl || wqbTmpl.type !== 'dungeon') continue;
+              if (wqbTmpl.target.bossKill && wqb.progress < wqb.targetCount) {
+                wqb.progress = Math.min(wqb.progress + 1, wqb.targetCount);
+                wqBossChanged = true;
+                if (killSocket) killSocket.emit('quest_progress', { questId: wqb.questId, progress: wqb.progress, targetCount: wqb.targetCount, complete: wqb.progress >= wqb.targetCount });
+              }
+              if (wqbTmpl.target.caveComplete && isCaveDungeon && wqb.progress < wqb.targetCount) {
+                wqb.progress = Math.min(wqb.progress + 1, wqb.targetCount);
+                wqBossChanged = true;
+                if (killSocket) killSocket.emit('quest_progress', { questId: wqb.questId, progress: wqb.progress, targetCount: wqb.targetCount, complete: wqb.progress >= wqb.targetCount });
+              }
+            }
+            if (wqBossChanged) accounts.saveAccount(wqBossAcc);
+          }
+        } catch (wqBossErr) { /* non-fatal */ }
+      }
+
       // --- Track daily challenge & achievement progress for dungeon kills ---
       challengesHandler.trackChallengeProgress(accounts, accKey, 'monster_kill', 1);
       challengesHandler.trackAchievementProgress(accounts, accKey, 'monster_kill', 1, killSocket);
@@ -5562,6 +5591,29 @@ module.exports = {
         if (accKey) {
           var floorReachedResult = updateQuestProgress(accounts, accKey, 'floor_reached', { floorNum: nextFloorNum });
           emitQuestUpdate(socket, accounts, accKey, floorReachedResult);
+        }
+
+        // --- World quest: dungeon minFloor tracking ---
+        if (accKey) {
+          try {
+            var wqFloorAcc = accounts.loadAccount(accKey);
+            if (wqFloorAcc && wqFloorAcc.questProgress && wqFloorAcc.questProgress.active) {
+              var _wqRpg = require('../rpg-data');
+              var wqFloorChanged = false;
+              for (var wqfi = 0; wqfi < wqFloorAcc.questProgress.active.length; wqfi++) {
+                var wqf = wqFloorAcc.questProgress.active[wqfi];
+                var wqfTmpl = _wqRpg.WORLD_QUEST_TEMPLATES && _wqRpg.WORLD_QUEST_TEMPLATES.find(function(t) { return t.questId === wqf.questId; });
+                if (wqfTmpl && wqfTmpl.type === 'dungeon' && wqfTmpl.target.minFloor && nextFloorNum >= wqfTmpl.target.minFloor) {
+                  if (wqf.progress < wqf.targetCount) {
+                    wqf.progress = wqf.targetCount;
+                    wqFloorChanged = true;
+                    socket.emit('quest_progress', { questId: wqf.questId, progress: wqf.progress, targetCount: wqf.targetCount, complete: true });
+                  }
+                }
+              }
+              if (wqFloorChanged) accounts.saveAccount(wqFloorAcc);
+            }
+          } catch (wqFloorErr) { /* non-fatal */ }
         }
 
         // --- Phantom Skill XP: Dungeon Delving/Dwelling on floor descent ---

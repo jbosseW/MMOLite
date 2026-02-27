@@ -1300,6 +1300,23 @@ var cachedRecipeList = buildRecipeList();
 // Rebuild after merging RPG recipes
 cachedRecipeList = buildRecipeList();
 
+// Append portal recipe as informational entry (crafted via portal_craft event on your plot)
+(function() {
+  var portalHandler = require('./portal');
+  cachedRecipeList.push({
+    id: 'personal_portal',
+    name: 'Personal Portal',
+    station: 'overworld_plot',
+    cost: portalHandler.PORTAL_CRAFT_COST,
+    outputType: 'personal_portal',
+    placeable: true,
+    resource: null,
+    requiresLockId: false,
+    skillReq: { crafting: 20 },
+    portalCraft: true,
+  });
+})();
+
 /**
  * Check whether the player is within STATION_PROXIMITY_PX of a placed object
  * matching the required station type.
@@ -2358,7 +2375,7 @@ module.exports = {
 
         // Remove item from inventory
         mmoInv.items.splice(itemIdx, 1);
-        accounts.saveAccount(key, accounts.loadAccount(key));
+        accounts.saveAccount(accounts.loadAccount(key));
 
         // Dungeon healing
         var dungeonCombat = null;

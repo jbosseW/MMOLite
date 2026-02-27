@@ -213,7 +213,7 @@ module.exports = {
               if (account.rpgStats) {
                 var maxHp = 50 + (account.rpgStats.vigor || 5) * 10;
                 account.currentHp = maxHp;
-                accounts.saveAccount(accKey, account);
+                accounts.saveAccount(account);
               }
               socket.emit('npc_action', { action: 'healed', npcId: npcDialogueState.npcId });
             }
@@ -237,7 +237,7 @@ module.exports = {
                   startedAt: Date.now(),
                   npcId: npcDialogueState.npcId,
                 });
-                accounts.saveAccount(accKey, account);
+                accounts.saveAccount(account);
                 socket.emit('quest_accepted', {
                   questId: choice.questId,
                   name: template ? template.name : choice.questId,
@@ -274,7 +274,7 @@ module.exports = {
               if (!account.factionRep) account.factionRep = {};
               account.factionRep[choice.factionId] = Math.min(15000,
                 (account.factionRep[choice.factionId] || 0) + choice.amount);
-              accounts.saveAccount(accKey, account);
+              accounts.saveAccount(account);
               socket.emit('npc_action', { action: 'faction_rep_gained', factionId: choice.factionId, amount: choice.amount });
             }
             break;
@@ -282,7 +282,7 @@ module.exports = {
             if (account && choice.amount) {
               if (typeof account.karma !== 'number') account.karma = 0;
               account.karma = Math.max(-100, Math.min(100, account.karma + choice.amount));
-              accounts.saveAccount(accKey, account);
+              accounts.saveAccount(account);
               socket.emit('npc_action', { action: 'karma_changed', karma: account.karma });
             }
             break;
@@ -372,7 +372,7 @@ module.exports = {
         startedAt: Date.now(),
         npcId: template.npcId || null,
       });
-      accounts.saveAccount(accKey, account);
+      accounts.saveAccount(account);
 
       socket.emit('quest_accepted', {
         questId: data.questId,
@@ -436,7 +436,7 @@ module.exports = {
         }
       }
 
-      accounts.saveAccount(accKey, account);
+      accounts.saveAccount(account);
 
       socket.emit('quest_turnin_result', {
         questId: data.questId,

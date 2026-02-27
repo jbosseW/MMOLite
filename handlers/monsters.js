@@ -189,6 +189,27 @@ var OVERWORLD_MONSTERS = [
     ],
   },
 
+  {
+    id: 'goblin_scout',
+    name: 'Goblin Scout',
+    hp: 25, atk: 11, def: 3, xp: 16, goldDrop: 6,
+    level: 2,
+    biomes: [12, 15, 5, 7],  // WASTES, SOUTHERN_WASTES, FOREST, SWAMP
+    possibleLoot: [
+      { type: 'herbs', chance: 0.10, amount: 1 },
+    ],
+  },
+  {
+    id: 'restless_undead',
+    name: 'Restless Undead',
+    hp: 32, atk: 10, def: 4, xp: 18, goldDrop: 5,
+    level: 2,
+    biomes: [12, 15, 8],  // WASTES, SOUTHERN_WASTES, HOLY_DOMINION
+    possibleLoot: [
+      { type: 'iron_ore', chance: 0.08, amount: 1 },
+    ],
+  },
+
   // ── Evolved Forms ──
   {
     id: 'dire_wolf', name: 'Dire Wolf',

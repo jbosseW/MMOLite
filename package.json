@@ -4,10 +4,22 @@
   "description": "MMOLite - Pokemon-style MMO game server (Love2D client)",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "jest --testPathPattern=tests/ --forceExit --detectOpenHandles",
+    "test:unit": "jest --testPathPattern=tests/(rpg-data|dungeon-combat|regressions|event-contracts) --forceExit",
+    "test:integration": "jest --testPathPattern=tests/socket-integration --forceExit --detectOpenHandles",
+    "test:strain": "node tests/bot-strain.js"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testTimeout": 30000
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "socket.io-client": "^4.8.3"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",

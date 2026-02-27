@@ -1164,6 +1164,20 @@ function addSkillXp(key, skillName, amount, xpRate, existingAccount) {
     }
   }
 
+  // --- Skill milestone world quest check ---
+  if (leveledUp && account.questProgress && account.questProgress.active) {
+    var _smRpg = require('./rpg-data');
+    for (var _smi = 0; _smi < account.questProgress.active.length; _smi++) {
+      var _smq = account.questProgress.active[_smi];
+      var _smTmpl = _smRpg.WORLD_QUEST_TEMPLATES && _smRpg.WORLD_QUEST_TEMPLATES.find(function(t) { return t.questId === _smq.questId; });
+      if (_smTmpl && _smTmpl.type === 'skill_milestone' && _smTmpl.target.skill === skillName) {
+        if (skill.level >= _smTmpl.target.level && _smq.progress < _smq.targetCount) {
+          _smq.progress = _smq.targetCount; // mark complete on next save
+        }
+      }
+    }
+  }
+
   saveAccount(account);
   return {
     level: skill.level, xp: skill.xp, xpNeeded: xpForLevel(skill.level), leveledUp: leveledUp,

@@ -994,6 +994,11 @@ function game.setupListeners()
         "furniture_effect",
         -- Base raid events
         "base_raid_alert", "raid_wave", "raid_ended",
+        -- Events registered in setupListeners but previously missing from this cleanup list
+        "party_kicked", "quest_error", "dungeon_quest_update", "unclaim_plot_confirm",
+        "mmo_auction_listings", "mmo_auction_listed", "mmo_auction_bought",
+        "mmo_auction_cancelled", "mmo_auction_my_results", "mmo_auction_error",
+        "mmo_auction_update",
     }
     for _, evt in ipairs(eventsToClean) do
         client:off(evt)
@@ -1723,6 +1728,20 @@ function game.setupListeners()
                     timer = 2.0,
                 })
             end
+        end
+    end)
+
+    client:on("unclaim_plot_confirm", function(data)
+        if not data then return end
+        overworld.plotUnclaimPending = true
+        local me = players[myId]
+        if me then
+            addFloatingText({
+                text = "Press [P] again to confirm plot unclaim",
+                x = me.x, y = me.y - 40,
+                color = {1, 0.6, 0.2},
+                timer = 5,
+            })
         end
     end)
 
@@ -2623,6 +2642,37 @@ function game.setupListeners()
         dungeon.progress = dungeon.progress or {}
         dungeon.progress.dailyQuests = data.quests or {}
         ui.showDungeonQuests = true
+    end)
+
+    -- Dungeon: live quest progress update (push after each floor action)
+    client:on("dungeon_quest_update", function(data)
+        if not data then return end
+        dungeon.progress = dungeon.progress or {}
+        dungeon.progress.dailyQuests = data.quests or {}
+    end)
+
+    -- Dungeon: individual quest completed notification
+    client:on("dungeon_quest_completed", function(data)
+        if not data then return end
+        local me = players[myId]
+        if not me then return end
+        addFloatingText({
+            text = "Quest Complete: " .. (data.questName or data.questId or "Quest"),
+            x = me.x, y = me.y - 56,
+            color = {0.4, 1, 0.4},
+            timer = 3,
+        })
+        local parts = {}
+        if data.xpReward and data.xpReward > 0 then table.insert(parts, "+" .. data.xpReward .. " XP") end
+        if data.goldReward and data.goldReward > 0 then table.insert(parts, "+" .. data.goldReward .. " Gold") end
+        if #parts > 0 then
+            addFloatingText({
+                text = table.concat(parts, "  "),
+                x = me.x, y = me.y - 72,
+                color = {1, 0.85, 0.2},
+                timer = 3,
+            })
+        end
     end)
 
     -- Dungeon: leaderboard
@@ -3660,6 +3710,19 @@ function game.setupListeners()
         end
     end)
 
+    client:on("party_kicked", function(data)
+        partyData = nil
+        local me = players[myId]
+        if me then
+            addFloatingText({
+                text = "You were kicked from the party",
+                x = me.x, y = me.y - 40,
+                color = {1, 0.5, 0.3},
+                timer = 3,
+            })
+        end
+    end)
+
     client:on("party_invite_received", function(data)
         if not data then return end
         partyInvitePending = {
@@ -4269,6 +4332,19 @@ function game.setupListeners()
     client:on("quest_list_result", function(data)
         if not data then return end
         questLog = { active = data.active or {}, completed = data.completed or {} }
+    end)
+
+    client:on("quest_error", function(data)
+        if not data then return end
+        local me = players[myId]
+        if me then
+            addFloatingText({
+                text = data.message or "Quest error",
+                x = me.x, y = me.y - 40,
+                color = {1, 0.3, 0.3},
+                timer = 2.5,
+            })
+        end
     end)
 
     -- ========================================================================
@@ -10750,7 +10826,12 @@ function game.keypressed(key)
         -- Plot claim/unclaim toggle
         if client and overworld.chunkBased then
             if overworld.myPlotId then
-                client:emit("unclaim_plot", {})
+                if overworld.plotUnclaimPending then
+                    overworld.plotUnclaimPending = false
+                    client:emit("unclaim_plot", {confirmed = true})
+                else
+                    client:emit("unclaim_plot", {})
+                end
             else
                 client:emit("claim_plot", {})
             end

@@ -157,14 +157,14 @@ module.exports = {
         return;
       }
 
-      var memberIdx = party.members.indexOf(data.targetId);
-      if (memberIdx === -1) {
+      if (!party.members.has(data.targetId)) {
         socket.emit('party_error', { message: 'Player not in your party.' });
         return;
       }
 
       // Remove from party
-      party.members.splice(memberIdx, 1);
+      party.members.delete(data.targetId);
+      if (state.playerPartyMap) state.playerPartyMap.delete(data.targetId);
 
       // Notify kicked player
       var kickedSocket = io.sockets.sockets.get(data.targetId);
@@ -173,19 +173,26 @@ module.exports = {
         kickedSocket.emit('party_kicked', { partyId: party.id, reason: 'Kicked by party leader.' });
       }
 
-      // Notify remaining party
-      io.to('party:' + party.id).emit('party_update', {
-        partyId: party.id,
-        leader: party.leader,
-        members: party.members,
-      });
-
       // Dissolve if only leader remains
-      if (party.members.length <= 1) {
+      if (party.members.size <= 1) {
         state.removeParty(party.id);
         socket.leave('party:' + party.id);
         socket.emit('party_disbanded', { partyId: party.id });
+        return;
       }
+
+      // Notify remaining party with proper member list
+      var kickMemberList = [];
+      for (var memberId of party.members) {
+        var u = state.users.get(memberId);
+        if (u) kickMemberList.push({ id: u.id, name: u.name, color: u.color });
+      }
+      io.to('party:' + party.id).emit('party_updated', {
+        partyId: party.id,
+        leader: party.leader,
+        members: kickMemberList,
+        event: 'A member was removed from the party',
+      });
     });
 
     // --- party_chat: send message to party ---

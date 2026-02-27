@@ -60,8 +60,12 @@ function _fillTemplate(template, vars) {
       case 'direction': return DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
       case 'rarity': return RARITIES[Math.floor(Math.random() * RARITIES.length)];
       case 'resource': return RESOURCES[Math.floor(Math.random() * RESOURCES.length)];
-      case 'faction1': return FACTION_NAMES[Math.floor(Math.random() * FACTION_NAMES.length)];
-      case 'faction2': return FACTION_NAMES[Math.floor(Math.random() * FACTION_NAMES.length)];
+      case 'faction1': return (vars._faction1 = FACTION_NAMES[Math.floor(Math.random() * FACTION_NAMES.length)]);
+      case 'faction2': {
+        var _f1 = vars._faction1 || vars.faction1;
+        var _pool = FACTION_NAMES.filter(function(f) { return f !== _f1; });
+        return _pool.length > 0 ? _pool[Math.floor(Math.random() * _pool.length)] : FACTION_NAMES[0];
+      }
       case 'race': return RACE_NAMES[Math.floor(Math.random() * RACE_NAMES.length)];
       case 'town': return TOWN_NAMES[Math.floor(Math.random() * TOWN_NAMES.length)];
       case 'biome': return BIOME_NAMES[Math.floor(Math.random() * BIOME_NAMES.length)];
